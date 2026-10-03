@@ -523,11 +523,9 @@ std::vector<std::unique_ptr<field>> make_llama_cmpl_schema(const common_params &
                     bool bad = false;
                     for (const auto & t : seq) {
                         if (t.is_null()) { toks.push_back(-1); continue; }
-                        // common_json has no is_number_unsigned (nlohmann
-                        // is_number_integer is true for both signed and unsigned);
-                        // read via double to tell -1 wildcard apart from huge
-                        // unsigned values. Direct get<int64_t> on 2^64-1 would be
-                        // out-of-range (wrap/throw risk).
+                        // No is_number_unsigned; is_number_integer covers both.
+                        // Read via double so huge values skip instead of
+                        // wrapping to -1 or truncating to 0 (wrong-token bias).
                         if (!t.is_number_integer()) { bad = true; break; }
                         const double dv = t.get<double>();
                         if (dv == -1.0) { toks.push_back(-1); continue; }

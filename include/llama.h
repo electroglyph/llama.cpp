@@ -461,7 +461,7 @@ extern "C" {
 
     typedef struct llama_ngram_bias {
         const llama_token * tokens; // len n_tokens; -1 (LLAMA_TOKEN_NULL) == single-token wildcard (prefix only)
-        size_t n_tokens;            // valid range [2, 8]; tokens[n_tokens-1] must be >= 0
+        size_t n_tokens;            // valid range [2, 8]; tokens[n_tokens-1] must be in [0, n_vocab)
         float bias;                 // additive logit delta; -INFINITY bans
     } llama_ngram_bias;
 
@@ -1609,18 +1609,17 @@ extern "C" {
 
     // Static per-request n-gram logit bias.
     //
-    // tokens borrows; caller keeps it alive through the call only (init copies).
-    // 0 is a normal token id, never a wildcard. -1 (LLAMA_TOKEN_NULL) is the
-    // wildcard sentinel, allowed only in tokens[0..n_tokens-2], at most 2 per
-    // pattern, never as the suffix. At least one concrete token is required
-    // in the prefix. n_tokens must be in [2, 8].
+    // tokens is borrowed for the call only (init copies). 0 is a normal id,
+    // never a wildcard. -1 (LLAMA_TOKEN_NULL) is the wildcard, allowed only
+    // in tokens[0..n_tokens-2], at most 2 per pattern, never as suffix.
+    // Prefix needs at least one concrete token. n_tokens must be in [2, 8].
     //
-    // Entries with null tokens, n_tokens outside [2, 8], all-wildcard prefix,
-    // suffix < 0 or >= n_vocab, concrete id outside [0, n_vocab), non-finite
-    // bias other than -INFINITY, or finite bias with |b| > 100 are skipped
-    // (never abort). Only the first 1024 patterns are used. Duplicate
-    // patterns merge by summing biases (-INFINITY absorbing).
-    // Empty valid set yields a no-op sampler, never NULL.
+    // Skipped (never abort): null tokens, n_tokens outside [2, 8],
+    // all-wildcard prefix, suffix outside [0, n_vocab), concrete id outside
+    // [0, n_vocab), non-finite bias other than -INFINITY, finite |b| > 100.
+    // Only the first 1024 patterns are used. Duplicates merge by summing
+    // biases (-INFINITY absorbing). Empty valid set yields a no-op sampler,
+    // never NULL.
     LLAMA_API struct llama_sampler * llama_sampler_init_ngram_bias(
                              int32_t   n_vocab,
                              int32_t   n_patterns,

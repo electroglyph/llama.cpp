@@ -358,8 +358,7 @@ struct common_sampler * common_sampler_init(
         }
         samplers.push_back(llama_sampler_init_ngram_bias(
             llama_vocab_n_tokens(vocab), (int32_t) c.size(), c.data()));
-        // NOTE: c borrows p.tokens storage; init copies synchronously,
-        // so c dying at scope end is safe (same as merged above).
+        // c borrows p.tokens storage; init copies, so scope exit is safe (same as merged above).
     }
 
     if (params.mirostat == 0) {
