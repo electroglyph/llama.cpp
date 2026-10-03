@@ -4121,8 +4121,8 @@ static const char * llama_sampler_ngram_bias_name(const struct llama_sampler * s
 
 static void llama_sampler_ngram_bias_accept(struct llama_sampler * smpl, llama_token token) {
     auto * ctx = (llama_sampler_ngram_bias *) smpl->ctx;
-    // -1 (LLAMA_TOKEN_NULL) is the wildcard sentinel, never a stored token id:
-    // concrete edges only hold ids in [0, n_vocab), so out-of-range ids can never match
+    // -1 (LLAMA_TOKEN_NULL) is the wildcard sentinel, never a stored token id.
+    // A stored out-of-range id would match every wildcard edge, so drop it here.
     if (token < 0 || token >= ctx->n_vocab) {
         return;
     }

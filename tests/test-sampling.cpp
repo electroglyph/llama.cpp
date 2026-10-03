@@ -379,6 +379,27 @@ static void test_ngram_bias() {
         auto out = ngram_run(V, pats, {1});
         GGML_ASSERT(out[2] == -1.0f);
     }
+    // isolated skips are observable as the empty-sampler marker
+    {
+        llama_token t_oor[] = {1, 99};
+        llama_token t_len1[] = {1};
+        llama_token t_allw[] = {-1, 2};
+        llama_token t_allw2[] = {-1, -1, 2};
+        const std::vector<llama_ngram_bias> cases[] = {
+            {{t_oor, 2, -1.0f}},
+            {{t_len1, 1, -1.0f}},
+            {{t_allw, 2, -1.0f}},
+            {{t_allw2, 3, -1.0f}},
+        };
+        for (const auto & p : cases) {
+            llama_sampler * s = llama_sampler_init_ngram_bias(V, 1, p.data());
+            GGML_ASSERT(std::string(llama_sampler_name(s)).find("?ngram-bias") != std::string::npos);
+            llama_sampler_free(s);
+        }
+        // all-wildcard prefix with 2 wildcards also skips when history would satisfy it
+        std::vector<llama_ngram_bias> p_aw = {{t_allw2, 3, -1.0f}};
+        GGML_ASSERT(ngram_run(V, p_aw, {7, 8})[2] == 0.0f);
+    }
     // max length 8 fires at full depth, length 9 rejected
     {
         llama_token t8[] = {0, 1, 2, 3, 4, 5, 6, 7};
@@ -479,7 +500,11 @@ static void test_ngram_bias() {
         llama_ngram_bias bad = {nullptr, 2, -1.0f};
         llama_sampler * s3 = llama_sampler_init_ngram_bias(V, 1, &bad);
         GGML_ASSERT(s3 != nullptr);
+        GGML_ASSERT(std::string(llama_sampler_name(s3)).find("?ngram-bias") != std::string::npos);
         llama_sampler_free(s3);
+        llama_sampler * s3b = llama_sampler_init_ngram_bias(-3, 1, nullptr);
+        GGML_ASSERT(s3b != nullptr);
+        llama_sampler_free(s3b);
         llama_sampler * s4 = llama_sampler_init_ngram_bias(V, -5, nullptr);
         GGML_ASSERT(s4 != nullptr);
         llama_sampler_free(s4);
@@ -525,6 +550,7 @@ static void test_ngram_bias() {
         llama_token_data_array cur_p = {cur.data(), cur.size(), -1, false};
         llama_sampler_apply(smpl, &cur_p);
         GGML_ASSERT(cur_p.size == 5);
+        for (size_t i = 0; i < cur_p.size; ++i) GGML_ASSERT(cur_p.data[i].logit == 0.0f);
         llama_sampler_free(smpl);
     }
     // slow path: suffix found by id scan when index and id differ
@@ -565,6 +591,33 @@ static void test_ngram_bias() {
         auto o1 = ngram_run(V, pats, {1, 5});
         auto o2 = ngram_run(V, pats, {1, 5});
         GGML_ASSERT(o1 == o2);
+        // same sampler, fresh candidates: scratch reuse does not corrupt
+        llama_sampler * smpl = llama_sampler_init_ngram_bias(V, 1, pats.data());
+        llama_sampler_accept(smpl, 1);
+        llama_sampler_accept(smpl, 5);
+        std::vector<llama_token_data> c1;
+        for (llama_token i = 0; i < V; ++i) c1.push_back({i, 0.0f, 0.0f});
+        llama_token_data_array p1 = {c1.data(), c1.size(), -1, false};
+        llama_sampler_apply(smpl, &p1);
+        std::vector<llama_token_data> c2;
+        for (llama_token i = 0; i < V; ++i) c2.push_back({i, 0.0f, 0.0f});
+        llama_token_data_array p2 = {c2.data(), c2.size(), -1, false};
+        llama_sampler_apply(smpl, &p2);
+        for (size_t i = 0; i < p1.size; ++i) GGML_ASSERT(p1.data[i].logit == p2.data[i].logit);
+        llama_sampler_free(smpl);
+    }
+    // finite bias never resurrects a pre-banned logit
+    {
+        llama_token t[] = {1, 2};
+        std::vector<llama_ngram_bias> pats = {{t, 2, -1.0f}};
+        llama_sampler * smpl = llama_sampler_init_ngram_bias(V, 1, pats.data());
+        llama_sampler_accept(smpl, 1);
+        std::vector<llama_token_data> cur;
+        for (llama_token i = 0; i < V; ++i) cur.push_back({i, i == 2 ? -INFINITY : 0.0f, 0.0f});
+        llama_token_data_array cur_p = {cur.data(), cur.size(), -1, false};
+        llama_sampler_apply(smpl, &cur_p);
+        GGML_ASSERT(cur_p.data[2].logit == -INFINITY);
+        llama_sampler_free(smpl);
     }
     // name and purity: no selected, no RNG, sorted=false on hit only
     {
@@ -582,6 +635,18 @@ static void test_ngram_bias() {
         bool sorted_miss = true;
         ngram_run(V, pats, {3}, &sorted_miss, nullptr, true);
         GGML_ASSERT(sorted_miss == true);
+        // miss never touches a preset selected index
+        {
+            llama_sampler * m = llama_sampler_init_ngram_bias(V, 1, pats.data());
+            llama_sampler_accept(m, 3);
+            std::vector<llama_token_data> cur;
+            for (llama_token i = 0; i < V; ++i) cur.push_back({i, 0.0f, 0.0f});
+            llama_token_data_array mp = {cur.data(), cur.size(), 7, true};
+            llama_sampler_apply(m, &mp);
+            GGML_ASSERT(mp.selected == 7);
+            GGML_ASSERT(mp.sorted == true);
+            llama_sampler_free(m);
+        }
         llama_sampler * e = llama_sampler_init_ngram_bias(V, 0, nullptr);
         GGML_ASSERT(std::string(llama_sampler_name(e)).find("?ngram-bias") != std::string::npos);
         llama_sampler_free(e);

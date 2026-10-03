@@ -2269,7 +2269,8 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         "n-gram logit bias: comma-separated token IDs, colon, bias.\n"
         "e.g. `--multi-logit-bias \"123,456:-2.0\"` biases token 456 by -2.0 when preceded by 123.\n"
         "Use -1 for a prefix wildcard (max 2 per pattern, never as the last ID).\n"
-        "Use -inf (or -INFINITY) as BIAS for a ban. Repeatable; string input is server-only, resolve IDs via /tokenize.",
+        "Use -inf (or -INFINITY) as BIAS for a ban. Patterns need 2-8 IDs, |BIAS| <= 100, max 1024 patterns; invalid entries are skipped.\n"
+        "Repeatable; string input is server-only, resolve IDs via /tokenize.",
         [](common_params & params, const std::string & value) {
             const size_t sep = value.rfind(':');
             if (sep == std::string::npos) throw std::invalid_argument("invalid input format");
