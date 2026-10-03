@@ -27,6 +27,22 @@ json task_params::format_logit_bias(const std::vector<llama_logit_bias> & logit_
     return data;
 }
 
+json task_params::format_ngram_bias(const std::vector<common_params_sampling::common_ngram_bias> & ngram_bias) const {
+    json data = json::array();
+    for (const auto & nb : ngram_bias) {
+        json seq = json::array();
+        for (const auto & t : nb.tokens) {
+            seq.push_back(t);
+        }
+        if (nb.bias == -INFINITY) {
+            data.push_back(json{{"sequence", seq}, {"bias", false}});
+        } else {
+            data.push_back(json{{"sequence", seq}, {"bias", nb.bias}});
+        }
+    }
+    return data;
+}
+
 json task_params::to_json(bool only_metrics) const {
     std::vector<std::string> samplers;
     samplers.reserve(sampling.samplers.size());
@@ -126,6 +142,7 @@ json task_params::to_json(bool only_metrics) const {
         {"ignore_eos",                sampling.ignore_eos},
         {"stream",                    stream},
         {"logit_bias",                format_logit_bias(sampling.logit_bias)},
+        {"multi_logit_bias",          format_ngram_bias(sampling.ngram_bias)},
         {"n_probs",                   sampling.n_probs},
         {"min_keep",                  sampling.min_keep},
         {"grammar",                   common_grammar_value(sampling.grammar)},

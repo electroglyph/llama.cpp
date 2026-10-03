@@ -623,3 +623,64 @@ def test_verbose_debug():
             assert "Book" in res.body["__verbose"]["prompt"]
         else:
             assert "__verbose" not in res.body
+
+
+def _mlb_chat_complete(messages, max_tokens=8, extra=None):
+    data = {
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": 0.0,
+        "verbose": True,
+    }
+    if extra:
+        data.update(extra)
+    res = server.make_request("POST", "/chat/completions", data=data)
+    assert res.status_code == 200
+    return res
+
+
+def _mlb_chat_gen_ids(body):
+    # exact generated token IDs via per-position logprobs (re-tokenizing
+    # the content string can drift from what was actually generated)
+    lp = body["choices"][0].get("logprobs") or {}
+    content = lp.get("content") or []
+    assert len(content) >= 3
+    return [pos["id"] for pos in content]
+
+
+def test_multi_logit_bias_chat():
+    global server
+    server.start()
+    messages = [
+        {"role": "system", "content": "Book"},
+        {"role": "user", "content": "What is the best book"},
+    ]
+    base = _mlb_chat_complete(messages, extra={"n_probs": 1})
+    content = base.body["choices"][0]["message"]["content"]
+    assert content
+    gen = _mlb_chat_gen_ids(base.body)
+    c0, c1 = gen[0], gen[1]
+    entry = {"sequence": [c0, c1], "bias": False}
+    res = _mlb_chat_complete(messages, extra={"multi_logit_bias": [entry]})
+    echo = res.body["__verbose"]["generation_settings"]["multi_logit_bias"]
+    assert echo == [entry]
+    # banning the greedily observed bigram steers the chat completion away
+    assert res.body["choices"][0]["message"]["content"] != content
+
+
+def test_multi_logit_bias_chat_ids_and_wildcard():
+    global server
+    server.start()
+    messages = [
+        {"role": "system", "content": "Book"},
+        {"role": "user", "content": "What is the best book"},
+    ]
+    base = _mlb_chat_complete(messages, extra={"n_probs": 1})
+    content = base.body["choices"][0]["message"]["content"]
+    gen = _mlb_chat_gen_ids(base.body)
+    c0, c1, c2 = gen[0], gen[1], gen[2]
+    # integer -1 wildcard form bans c2 after any token following c0
+    res = _mlb_chat_complete(messages, extra={"multi_logit_bias": [{"sequence": [c0, -1, c2], "bias": False}]})
+    echo = res.body["__verbose"]["generation_settings"]["multi_logit_bias"]
+    assert echo == [{"sequence": [c0, -1, c2], "bias": False}]
+    assert res.body["choices"][0]["message"]["content"] != content

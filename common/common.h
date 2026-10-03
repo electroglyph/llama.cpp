@@ -280,6 +280,12 @@ struct common_params_sampling {
     std::vector<llama_logit_bias> logit_bias;     // logit biases to apply
     std::vector<llama_logit_bias> logit_bias_eog; // pre-calculated logit biases for EOG tokens
 
+    struct common_ngram_bias {
+        llama_tokens tokens; // owned; -1 == wildcard (prefix only)
+        float bias = 0.0f;
+    };
+    std::vector<common_ngram_bias> ngram_bias;
+
     // The assistant generation prompt already prefilled into the prompt.
     // Fed to the grammar sampler (to advance past pre-existing tokens) and used
     // to determine the reasoning budget sampler's initial state.

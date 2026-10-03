@@ -15,10 +15,14 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <map>
+#include <memory>
 #include <numeric>
 #include <random>
 #include <unordered_map>
 #include <stdexcept>
+#include <utility>
+#include <vector>
 
 // the ring buffer works similarly to std::deque, but with a fixed capacity
 template<typename T>
@@ -4061,6 +4065,321 @@ struct llama_sampler * llama_sampler_init_logit_bias(
             /* .inp_logit_idxs = */ nullptr,
         }
     );
+}
+
+// ngram-bias
+
+static constexpr int32_t NGRAM_BIAS_MAX_PATTERNS  = 1024;
+static constexpr size_t  NGRAM_BIAS_MAX_LEN       = 8;
+static constexpr float   NGRAM_BIAS_MAX_ABS       = 100.0f;
+static constexpr int32_t NGRAM_BIAS_MAX_WILDCARDS = 2;
+static constexpr size_t  NGRAM_BIAS_SCRATCH_CAP   = 128;
+
+struct llama_sampler_ngram_bias : public llama_sampler_backend {
+    struct hit {
+        llama_token suffix;
+        float bias;
+    };
+    struct node {
+        // linear search is deliberate: per lookup at most one exact edge
+        // can match (plus the wildcard edge), so a map buys nothing
+        std::vector<std::pair<llama_token, int32_t>> next;
+        int32_t wildcard = -1; // child idx, -1 == none
+        std::vector<hit> out;
+    };
+    // nodes[0] is root; indices stable after build
+    std::shared_ptr<const std::vector<node>> trie;
+    int32_t n_max = 0;
+    int32_t n_vocab = 0;
+    ring_buffer<llama_token> hist;
+    std::vector<int32_t> scratch_a;
+    std::vector<int32_t> scratch_b;
+
+    llama_sampler_ngram_bias(
+            std::shared_ptr<const std::vector<node>> trie,
+            int32_t n_max,
+            int32_t n_vocab)
+        : llama_sampler_backend("ngram-bias")
+        , trie(std::move(trie))
+        , n_max(n_max)
+        , n_vocab(n_vocab)
+        , hist((size_t) std::max<int32_t>(1, n_max - 1)) {
+        scratch_a.reserve(NGRAM_BIAS_SCRATCH_CAP);
+        scratch_b.reserve(NGRAM_BIAS_SCRATCH_CAP);
+    }
+
+    void copy_state(const llama_sampler_ngram_bias & src) {
+        // trie config stays (caller must ensure same patterns); only history moves
+        hist = src.hist;
+    }
+};
+
+static const char * llama_sampler_ngram_bias_name(const struct llama_sampler * smpl) {
+    auto * ctx = (llama_sampler_ngram_bias *) smpl->ctx;
+    return ctx->get_name();
+}
+
+static void llama_sampler_ngram_bias_accept(struct llama_sampler * smpl, llama_token token) {
+    auto * ctx = (llama_sampler_ngram_bias *) smpl->ctx;
+    // -1 (LLAMA_TOKEN_NULL) is the wildcard sentinel, never a stored token id:
+    // concrete edges only hold ids in [0, n_vocab), so out-of-range ids can never match
+    if (token < 0 || token >= ctx->n_vocab) {
+        return;
+    }
+    ctx->hist.push_back(token);
+}
+
+static void llama_sampler_ngram_bias_apply(struct llama_sampler * smpl, llama_token_data_array * cur_p) {
+    auto * ctx = (llama_sampler_ngram_bias *) smpl->ctx;
+    if (!ctx->trie || ctx->trie->empty() || cur_p->size == 0 || ctx->hist.size() == 0) {
+        return;
+    }
+    ctx->scratch_a.clear();
+    ctx->scratch_a.push_back(0);
+    const size_t depth_max = std::min(ctx->hist.size(), (size_t) (ctx->n_max - 1));
+    bool changed = false;
+    for (size_t d = 0; d < depth_max; ++d) {
+        const llama_token tok = ctx->hist.rat(d);
+        ctx->scratch_b.clear();
+        for (const int32_t node_idx : ctx->scratch_a) {
+            const auto & nd = (*ctx->trie)[(size_t) node_idx];
+            for (const auto & e : nd.next) {
+                if (e.first == tok) {
+                    ctx->scratch_b.push_back(e.second);
+                    break;
+                }
+            }
+            if (nd.wildcard != -1) {
+                ctx->scratch_b.push_back(nd.wildcard);
+            }
+        }
+        if (ctx->scratch_b.empty()) {
+            break;
+        }
+        ctx->scratch_a.swap(ctx->scratch_b);
+        for (const int32_t node_idx : ctx->scratch_a) {
+            const auto & nd = (*ctx->trie)[(size_t) node_idx];
+            for (const auto & h : nd.out) {
+                bool applied = false;
+                // fast path when candidates are id-ordered; else scan by id
+                if (h.suffix >= 0 && (size_t) h.suffix < cur_p->size && cur_p->data[h.suffix].id == h.suffix) {
+                    if (h.bias == -INFINITY) {
+                        cur_p->data[h.suffix].logit = -INFINITY;
+                    } else if (cur_p->data[h.suffix].logit != -INFINITY) {
+                        cur_p->data[h.suffix].logit += h.bias;
+                    }
+                    applied = true;
+                } else {
+                    for (size_t i = 0; i < cur_p->size; ++i) {
+                        if (cur_p->data[i].id == h.suffix) {
+                            if (h.bias == -INFINITY) {
+                                cur_p->data[i].logit = -INFINITY;
+                            } else if (cur_p->data[i].logit != -INFINITY) {
+                                cur_p->data[i].logit += h.bias;
+                            }
+                            applied = true;
+                            break;
+                        }
+                    }
+                }
+                if (applied) {
+                    changed = true;
+                }
+            }
+        }
+    }
+    if (changed) {
+        cur_p->sorted = false;
+    }
+}
+
+static void llama_sampler_ngram_bias_reset(struct llama_sampler * smpl) {
+    auto * ctx = (llama_sampler_ngram_bias *) smpl->ctx;
+    ctx->hist.clear();
+}
+
+static struct llama_sampler * llama_sampler_ngram_bias_clone(const struct llama_sampler * smpl) {
+    const auto * ctx = (const llama_sampler_ngram_bias *) smpl->ctx;
+    auto * result_ctx = new llama_sampler_ngram_bias(ctx->trie, ctx->n_max, ctx->n_vocab);
+    result_ctx->hist = ctx->hist;
+    // scratch vectors stay empty with reserved capacity
+    auto * result = llama_sampler_init(
+        /* .iface = */ smpl->iface,
+        /* .ctx   = */ result_ctx);
+    return result;
+}
+
+static void llama_sampler_ngram_bias_free(struct llama_sampler * smpl) {
+    delete (llama_sampler_ngram_bias *) smpl->ctx;
+}
+
+static struct llama_sampler_i llama_sampler_ngram_bias_i = {
+    /* .name              = */ llama_sampler_ngram_bias_name,
+    /* .accept            = */ llama_sampler_ngram_bias_accept,
+    /* .apply             = */ llama_sampler_ngram_bias_apply,
+    /* .reset             = */ llama_sampler_ngram_bias_reset,
+    /* .clone             = */ llama_sampler_ngram_bias_clone,
+    /* .free              = */ llama_sampler_ngram_bias_free,
+    /* .backend_init      = */ nullptr,
+    /* .backend_accept    = */ nullptr,
+    /* .backend_apply     = */ nullptr,
+    /* .backend_set_input = */ nullptr,
+    /* .backend_reset     = */ nullptr,
+    /* .copy_state        = */ llama_sampler_backend_copy_state<llama_sampler_ngram_bias>,
+};
+
+struct llama_sampler * llama_sampler_init_ngram_bias(
+                         int32_t   n_vocab,
+                         int32_t   n_patterns,
+        const llama_ngram_bias * patterns) {
+    if (n_vocab <= 0 || n_patterns <= 0 || patterns == nullptr) {
+        return llama_sampler_init_empty("?ngram-bias");
+    }
+    int32_t n_check = n_patterns;
+    bool truncated = false;
+    if (n_check > NGRAM_BIAS_MAX_PATTERNS) {
+        n_check = NGRAM_BIAS_MAX_PATTERNS;
+        truncated = true;
+    }
+    // validated patterns before merge
+    std::vector<std::pair<std::vector<llama_token>, float>> valid;
+    valid.reserve((size_t) n_check);
+    int n_null = 0;
+    int n_len = 0;
+    int n_id = 0;
+    int n_suffix_wild = 0;
+    int n_wild_count = 0;
+    int n_all_wild = 0;
+    int n_bias = 0;
+    int n_mag = 0;
+    for (int32_t i = 0; i < n_check; ++i) {
+        const llama_ngram_bias & p = patterns[i];
+        if (p.tokens == nullptr) {
+            if (p.n_tokens > 0) {
+                n_null++;
+            } else {
+                n_len++;
+            }
+            continue;
+        }
+        if (p.n_tokens < 2 || p.n_tokens > NGRAM_BIAS_MAX_LEN) {
+            n_len++;
+            continue;
+        }
+        const size_t len = p.n_tokens;
+        std::vector<llama_token> toks;
+        toks.reserve(len);
+        bool bad = false;
+        int n_wild = 0;
+        int n_concrete_prefix = 0;
+        for (size_t k = 0; k < len; ++k) {
+            const llama_token tok = p.tokens[k];
+            if (tok == -1) {
+                if (k == len - 1) {
+                    bad = true;
+                    n_suffix_wild++;
+                    break;
+                }
+                n_wild++;
+                toks.push_back(-1);
+            } else if (tok < -1 || tok >= n_vocab) {
+                bad = true;
+                n_id++;
+                break;
+            } else {
+                toks.push_back(tok);
+                if (k < len - 1) {
+                    n_concrete_prefix++;
+                }
+            }
+        }
+        if (bad) {
+            continue;
+        }
+        if (n_wild > NGRAM_BIAS_MAX_WILDCARDS) {
+            n_wild_count++;
+            continue;
+        }
+        if (n_concrete_prefix == 0) {
+            n_all_wild++;
+            continue;
+        }
+        const float b = p.bias;
+        if (!(std::isfinite(b) || b == -INFINITY)) {
+            n_bias++;
+            continue;
+        }
+        if (std::isfinite(b) && fabsf(b) > NGRAM_BIAS_MAX_ABS) {
+            n_mag++;
+            continue;
+        }
+        valid.emplace_back(std::move(toks), b);
+    }
+    const int n_skip = n_null + n_len + n_id + n_suffix_wild + n_wild_count + n_all_wild + n_bias + n_mag;
+    if (truncated || n_skip > 0) {
+        LLAMA_LOG_WARN(
+            "%s: skipped %d invalid ngram-bias patterns (null=%d len=%d id=%d suffix_wild=%d wild_count=%d all_wild=%d bias=%d mag=%d truncated=%d)\n",
+            __func__, n_skip + (truncated ? (n_patterns - n_check) : 0),
+            n_null, n_len, n_id, n_suffix_wild, n_wild_count, n_all_wild, n_bias, n_mag, truncated ? 1 : 0);
+    }
+    if (valid.empty()) {
+        return llama_sampler_init_empty("?ngram-bias");
+    }
+    // merge duplicates on (prefix incl. -1 positions, suffix): sum, -INFINITY absorbing
+    std::map<std::vector<llama_token>, float> merged;
+    for (auto & vp : valid) {
+        auto it = merged.find(vp.first);
+        if (it == merged.end()) {
+            merged.emplace(vp.first, vp.second);
+        } else {
+            if (it->second == -INFINITY || vp.second == -INFINITY) {
+                it->second = -INFINITY;
+            } else {
+                it->second += vp.second;
+            }
+        }
+    }
+    int32_t n_max = 0;
+    for (const auto & kv : merged) {
+        n_max = std::max<int32_t>(n_max, (int32_t) kv.first.size());
+    }
+    auto trie = std::make_shared<std::vector<llama_sampler_ngram_bias::node>>();
+    trie->emplace_back();
+    for (const auto & kv : merged) {
+        const std::vector<llama_token> & toks = kv.first;
+        const size_t len = toks.size();
+        int32_t node = 0;
+        for (size_t k = len - 1; k > 0; --k) {
+            const llama_token tok = toks[k - 1];
+            if (tok == -1) {
+                if ((*trie)[(size_t) node].wildcard == -1) {
+                    const int32_t child = (int32_t) trie->size();
+                    trie->emplace_back();
+                    (*trie)[(size_t) node].wildcard = child;
+                }
+                node = (*trie)[(size_t) node].wildcard;
+            } else {
+                int32_t child = -1;
+                for (const auto & e : (*trie)[(size_t) node].next) {
+                    if (e.first == tok) {
+                        child = e.second;
+                        break;
+                    }
+                }
+                if (child == -1) {
+                    child = (int32_t) trie->size();
+                    trie->emplace_back();
+                    (*trie)[(size_t) node].next.emplace_back(tok, child);
+                }
+                node = child;
+            }
+        }
+        (*trie)[(size_t) node].out.push_back({toks[len - 1], kv.second});
+    }
+    std::shared_ptr<const std::vector<llama_sampler_ngram_bias::node>> shared = trie;
+    return llama_sampler_init(
+        /* .iface = */ &llama_sampler_ngram_bias_i,
+        /* .ctx   = */ new llama_sampler_ngram_bias(shared, n_max, n_vocab));
 }
 
 // infill

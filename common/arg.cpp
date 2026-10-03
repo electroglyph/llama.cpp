@@ -2265,6 +2265,40 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_sampling());
     add_opt(common_arg(
+        {"--multi-logit-bias"}, "IDS:BIAS",
+        "n-gram logit bias: comma-separated token IDs, colon, bias.\n"
+        "e.g. `--multi-logit-bias \"123,456:-2.0\"` biases token 456 by -2.0 when preceded by 123.\n"
+        "Use -1 for a prefix wildcard (max 2 per pattern, never as the last ID).\n"
+        "Use -inf (or -INFINITY) as BIAS for a ban. Repeatable; string input is server-only, resolve IDs via /tokenize.",
+        [](common_params & params, const std::string & value) {
+            const size_t sep = value.rfind(':');
+            if (sep == std::string::npos) throw std::invalid_argument("invalid input format");
+            llama_tokens toks;
+            std::stringstream ss(value.substr(0, sep));
+            std::string item;
+            while (std::getline(ss, item, ',')) {
+                if (item.empty()) throw std::invalid_argument("invalid input format");
+                size_t end = 0;
+                long long id;
+                try { id = std::stoll(item, &end); }
+                catch (const std::exception &) { throw std::invalid_argument("invalid input format"); }
+                if (end != item.size()) throw std::invalid_argument("invalid input format");
+                if (id < INT32_MIN || id > INT32_MAX) throw std::invalid_argument("invalid input format");
+                toks.push_back((llama_token) id);
+            }
+            const std::string bs = value.substr(sep + 1);
+            float bias;
+            if (bs == "-inf" || bs == "-INFINITY") bias = -INFINITY;
+            else {
+                size_t end = 0;
+                try { bias = std::stof(bs, &end); }
+                catch (const std::exception &) { throw std::invalid_argument("invalid input format"); }
+                if (end != bs.size()) throw std::invalid_argument("invalid input format");
+            }
+            params.sampling.ngram_bias.push_back({std::move(toks), bias});
+        }
+    ).set_sampling());
+    add_opt(common_arg(
         {"--grammar"}, "GRAMMAR",
         "BNF-like grammar to constrain generations (see samples in grammars/ dir)",
         [](common_params & params, const std::string & value) {

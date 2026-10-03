@@ -666,3 +666,301 @@ def test_completion_prompt_cache():
         assert "prompt_n" in timings and timings["prompt_n"] + timings["cache_n"] == n_prompt
         assert "predicted_n" in timings and timings["predicted_n"] == n_predict
         assert "tokens" in res.body and isinstance(res.body["tokens"], list)
+
+
+def _mlb_tokenize(content):
+    res = server.make_request("POST", "/tokenize", data={"content": content})
+    assert res.status_code == 200
+    return res.body["tokens"]
+
+
+def _mlb_detokenize(tokens):
+    res = server.make_request("POST", "/detokenize", data={"tokens": tokens})
+    assert res.status_code == 200
+    return res.body["content"]
+
+
+def _mlb_complete(prompt, n_predict=8, extra=None):
+    data = {
+        "n_predict": n_predict,
+        "prompt": prompt,
+        "temperature": 0.0,
+        "return_tokens": True,
+    }
+    if extra:
+        data.update(extra)
+    res = server.make_request("POST", "/completion", data=data)
+    assert res.status_code == 200
+    return res
+
+
+def _mlb_baseline(prompt="I believe the meaning of life is", n_predict=8):
+    res = _mlb_complete(prompt, n_predict)
+    assert len(res.body["tokens"]) >= 3
+    prompt_tokens = _mlb_tokenize(prompt)
+    assert len(prompt_tokens) >= 2
+    return res, prompt_tokens
+
+
+def test_multi_logit_bias_ids():
+    global server
+    server.start()
+    prompt = "I believe the meaning of life is"
+    base, prompt_tokens = _mlb_baseline(prompt)
+    t0 = base.body["tokens"][0]
+    lp = prompt_tokens[-1]
+    entry = {"sequence": [lp, t0], "bias": False}
+    res = _mlb_complete(prompt, extra={"multi_logit_bias": [entry]})
+    echo = res.body["generation_settings"]["multi_logit_bias"]
+    assert echo == [{"sequence": [lp, t0], "bias": False}]
+    # the banned bigram can no longer start the completion
+    assert res.body["tokens"][0] != t0
+
+
+def test_multi_logit_bias_string():
+    global server
+    server.start()
+    prompt = "I believe the meaning of life is"
+    base, prompt_tokens = _mlb_baseline(prompt)
+    t0 = base.body["tokens"][0]
+    lp = prompt_tokens[-1]
+    text = _mlb_detokenize([lp, t0])
+    ids = _mlb_tokenize(text)
+    assert len(ids) >= 2
+    res = _mlb_complete(prompt, extra={"multi_logit_bias": [{"sequence": text, "bias": -100.0}]})
+    echo = res.body["generation_settings"]["multi_logit_bias"]
+    # string form is normalized to token IDs in the echo
+    assert echo == [{"sequence": ids, "bias": -100.0}]
+    if ids == [lp, t0]:
+        # exact round-trip: the observed bigram is banned, greedy pick changes
+        assert res.body["tokens"][0] != t0
+
+
+def test_multi_logit_bias_wildcard():
+    global server
+    server.start()
+    prompt = "I believe the meaning of life is"
+    base, prompt_tokens = _mlb_baseline(prompt)
+    t1 = base.body["tokens"][1]
+    lp = prompt_tokens[-1]
+    for wild in [None, -1]:
+        res = _mlb_complete(prompt, extra={"multi_logit_bias": [{"sequence": [lp, wild, t1], "bias": False}]})
+        echo = res.body["generation_settings"]["multi_logit_bias"]
+        # both spellings parse; the echo normalizes to -1
+        assert echo == [{"sequence": [lp, -1, t1], "bias": False}]
+        # [lp, *, t1] bans t1 after any token following the prompt ...
+        assert res.body["tokens"][0] == base.body["tokens"][0]
+        assert res.body["tokens"][1] != t1
+    # suffix wildcard is a footgun: skipped, never 400
+    res = _mlb_complete(prompt, extra={"multi_logit_bias": [{"sequence": [lp, None], "bias": False}]})
+    assert res.body["generation_settings"]["multi_logit_bias"] == []
+
+
+def test_multi_logit_bias_unigram_untouched():
+    global server
+    server.start()
+    prompt = "I believe the meaning of life is"
+    base, prompt_tokens = _mlb_baseline(prompt)
+    t0 = base.body["tokens"][0]
+    rare = _mlb_tokenize("zebra xylophone")
+    prefix = next(t for t in rare if t not in prompt_tokens and t != t0)
+    res = _mlb_complete(prompt, extra={"multi_logit_bias": [{"sequence": [prefix, t0], "bias": False}]})
+    # prefix never occurs in history: the suffix token is still generated
+    assert res.body["tokens"] == base.body["tokens"]
+    assert res.body["content"] == base.body["content"]
+
+
+def test_multi_logit_bias_negative():
+    global server
+    server.start()
+    prompt = "I believe the meaning of life is"
+    base, prompt_tokens = _mlb_baseline(prompt)
+    t0 = base.body["tokens"][0]
+    lp = prompt_tokens[-1]
+    # field with the wrong shape is ignored, never 400
+    for bad_field in [{"sequence": [lp, t0]}, "nope", 42, None, True, 3.5]:
+        res = _mlb_complete(prompt, extra={"multi_logit_bias": bad_field})
+        assert res.body["generation_settings"]["multi_logit_bias"] == []
+    # entry-level junk is skipped; the one valid entry survives
+    junk = [
+        "str", 123, None, [1, 2],
+        {"sequence": [lp, t0]},  # missing bias
+        {"bias": -2.0},  # missing sequence
+        {"sequence": [lp, t0], "bias": True},  # true is not a ban
+        {"sequence": [lp, t0], "bias": "strong"},  # string bias
+        {"sequence": [lp, t0], "bias": None},  # null bias
+        {"sequence": [1.5, t0], "bias": -2.0},  # float id
+        {"sequence": [True, t0], "bias": -2.0},  # bool id
+        {"sequence": [-2, t0], "bias": -2.0},  # id < -1
+        {"sequence": [2**40, t0], "bias": -2.0},  # huge unsigned id
+        {"sequence": [lp, 2**64 - 1, t0], "bias": -2.0},  # max uint64 in wildcard slot: OOR skip, must not parse as -1 (which would be a valid wildcard pattern)
+        {"sequence": [10**9, t0], "bias": -2.0},  # id >= n_vocab
+        {"sequence": "", "bias": -2.0},  # empty string: 0 tokens
+        {"sequence": "word " * 30, "bias": -2.0},  # long string: > 8 tokens
+        {"sequence": 42, "bias": -2.0},  # sequence wrong type
+        {"sequence": None, "bias": -2.0},  # sequence wrong type
+        {"sequence": [lp, -1], "bias": -2.0},  # suffix wildcard
+        {"sequence": [t0], "bias": -2.0},  # length 1
+        {"sequence": [lp, -1, -1, -1, t0], "bias": -2.0},  # > 2 wildcards
+        {"sequence": [lp, t0, lp, t0, lp, t0, lp, t0, lp], "bias": -2.0},  # L == 9
+        {"sequence": [lp, t0], "bias": 101.0},  # |bias| > 100
+        {"sequence": [lp, t0], "bias": 1e300},  # overflows to +inf in get<float>
+        {"sequence": [lp, t0], "bias": -2.0},  # the valid control entry
+    ]
+    res = _mlb_complete(prompt, extra={"multi_logit_bias": junk})
+    assert res.body["generation_settings"]["multi_logit_bias"] == [{"sequence": [lp, t0], "bias": -2.0}]
+
+
+def test_multi_logit_bias_empty():
+    global server
+    server.start()
+    prompt = "I believe the meaning of life is"
+    base, _ = _mlb_baseline(prompt)
+    res = _mlb_complete(prompt, extra={"multi_logit_bias": []})
+    assert res.body["generation_settings"]["multi_logit_bias"] == []
+    assert res.body["tokens"] == base.body["tokens"]
+    assert res.body["content"] == base.body["content"]
+
+
+def _mlb_distinct_ids(count):
+    content = "The quick brown fox jumps over the lazy dog. Pack my box with five dozen liquor jugs. "
+    content += " ".join(str(i) for i in range(200))
+    ids = _mlb_tokenize(content)
+    seen = list(dict.fromkeys(ids))
+    assert len(seen) >= count, f"need {count} distinct ids, got {len(seen)}"
+    return seen
+
+
+def test_multi_logit_bias_caps():
+    global server
+    server.start()
+    prompt = "I believe the meaning of life is"
+    ids = _mlb_distinct_ids(40)
+    # 1025 pairwise-distinct bigrams: extras beyond 1024 are skipped
+    entries = [{"sequence": [ids[i // len(ids)], ids[i % len(ids)]], "bias": -1.0} for i in range(1025)]
+    res = _mlb_complete(prompt, n_predict=2, extra={"multi_logit_bias": entries})
+    assert len(res.body["generation_settings"]["multi_logit_bias"]) == 1024
+    # L == 9 rejected while L == 8 accepted
+    res = _mlb_complete(prompt, n_predict=2, extra={"multi_logit_bias": [
+        {"sequence": ids[:9], "bias": -1.0},
+        {"sequence": ids[:8], "bias": -1.0},
+    ]})
+    echo = res.body["generation_settings"]["multi_logit_bias"]
+    assert echo == [{"sequence": ids[:8], "bias": -1.0}]
+    # 260 wildcard patterns: only the first 256 survive, exact ones unaffected
+    wild = [{"sequence": [ids[i // len(ids)], -1, ids[i % len(ids)]], "bias": -1.0} for i in range(260)]
+    exact = [
+        {"sequence": [ids[0], ids[1]], "bias": -1.0},
+        {"sequence": [ids[2], ids[3]], "bias": -1.0},
+    ]
+    res = _mlb_complete(prompt, n_predict=2, extra={"multi_logit_bias": wild + exact})
+    echo = res.body["generation_settings"]["multi_logit_bias"]
+    assert len(echo) == 258
+    assert sum(1 for e in echo if -1 in e["sequence"]) == 256
+    assert echo[-2:] == exact
+
+
+def test_multi_logit_bias_leading_wildcard():
+    global server
+    server.start()
+    prompt = "I believe the meaning of life is"
+    base, prompt_tokens = _mlb_baseline(prompt)
+    t0 = base.body["tokens"][0]
+    lp = prompt_tokens[-1]
+    res = _mlb_complete(prompt, extra={"multi_logit_bias": [
+        {"sequence": [-1, t0], "bias": False},  # all-wildcard prefix: skipped
+        {"sequence": [-1, lp, t0], "bias": False},  # concrete backup: kept
+    ]})
+    echo = res.body["generation_settings"]["multi_logit_bias"]
+    assert echo == [{"sequence": [-1, lp, t0], "bias": False}]
+    # [-1, lp, t0] matches the prompt tail, so the greedy first token is banned
+    assert res.body["tokens"][0] != t0
+
+
+def test_multi_logit_bias_backend_sampling():
+    global server
+    server.start()
+    prompt = "I believe the meaning of life is"
+    base, prompt_tokens = _mlb_baseline(prompt)
+    t0 = base.body["tokens"][0]
+    lp = prompt_tokens[-1]
+    res = _mlb_complete(prompt, extra={
+        "multi_logit_bias": [{"sequence": [lp, t0], "bias": False}],
+        "backend_sampling": True,
+    })
+    assert res.body["generation_settings"]["backend_sampling"] is False
+    assert res.body["generation_settings"]["multi_logit_bias"] == [{"sequence": [lp, t0], "bias": False}]
+    assert res.body["tokens"][0] != t0
+
+
+def test_multi_logit_bias_backend_sampling_empty():
+    global server
+    server.start()
+    # empty ngram list: the backend path stays allowed and enabled
+    res = _mlb_complete("I believe the meaning of life is", extra={
+        "multi_logit_bias": [],
+        "backend_sampling": True,
+    })
+    assert res.body["generation_settings"]["backend_sampling"] is True
+    assert res.body["generation_settings"]["multi_logit_bias"] == []
+
+
+def test_multi_logit_bias_routes():
+    global server
+    server.debug = True  # to get the "__verbose" object in OAI responses
+    server.start()
+    prompt = "I believe the meaning of life is"
+    base, prompt_tokens = _mlb_baseline(prompt)
+    t0 = base.body["tokens"][0]
+    lp = prompt_tokens[-1]
+    entry = {"sequence": [lp, t0], "bias": False}
+    # /v1/completions shares the same schema funnel
+    res = server.make_request("POST", "/v1/completions", data={
+        "prompt": prompt,
+        "max_tokens": 8,
+        "temperature": 0.0,
+        "multi_logit_bias": [entry],
+    })
+    assert res.status_code == 200
+    assert res.body["__verbose"]["generation_settings"]["multi_logit_bias"] == [entry]
+    # /chat/completions passes the field through the OAI passthrough
+    res = server.make_request("POST", "/chat/completions", data={
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 8,
+        "temperature": 0.0,
+        "multi_logit_bias": [entry],
+    })
+    assert res.status_code == 200
+    assert res.body["__verbose"]["generation_settings"]["multi_logit_bias"] == [entry]
+    # streaming uses the identical sampler path
+    chunks = server.make_stream_request("POST", "/completion", data={
+        "prompt": prompt,
+        "n_predict": 8,
+        "temperature": 0.0,
+        "stream": True,
+        "multi_logit_bias": [entry],
+    })
+    streamed = ""
+    for data in chunks:
+        if data["stop"]:
+            assert data["generation_settings"]["multi_logit_bias"] == [entry]
+        else:
+            streamed += data["content"]
+    assert len(streamed) > 0
+
+
+def test_multi_logit_bias_response_fields():
+    global server
+    server.start()
+    prompt = "I believe the meaning of life is"
+    _, prompt_tokens = _mlb_baseline(prompt)
+    lp = prompt_tokens[-1]
+    entry = {"sequence": [lp, prompt_tokens[-2]], "bias": -2.0}
+    res = server.make_request("POST", "/completion", data={
+        "prompt": prompt,
+        "n_predict": 2,
+        "multi_logit_bias": [entry],
+        "response_fields": ["generation_settings/multi_logit_bias"],
+    })
+    assert res.status_code == 200
+    assert res.body["generation_settings/multi_logit_bias"] == [entry]

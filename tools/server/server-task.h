@@ -99,6 +99,7 @@ struct task_params {
     int32_t embd_normalize = 2; // (-1=none, 0=max absolute int16, 1=taxicab, 2=Euclidean/L2, >2=p-norm)
 
     json format_logit_bias(const std::vector<llama_logit_bias> & logit_bias) const;
+    json format_ngram_bias(const std::vector<common_params_sampling::common_ngram_bias> & ngram_bias) const;
     json to_json(bool only_metrics = false) const;
 };
 

@@ -179,11 +179,13 @@ std::string common_params_sampling::print() const {
             "\trepeat_last_n = %d, repeat_penalty = %.3f, frequency_penalty = %.3f, presence_penalty = %.3f\n"
             "\tdry_multiplier = %.3f, dry_base = %.3f, dry_allowed_length = %d, dry_penalty_last_n = %d\n"
             "\ttop_k = %d, top_p = %.3f, min_p = %.3f, xtc_probability = %.3f, xtc_threshold = %.3f, typical_p = %.3f, top_n_sigma = %.3f, temp = %.3f\n"
-            "\tmirostat = %d, mirostat_lr = %.3f, mirostat_ent = %.3f, adaptive_target = %.3f, adaptive_decay = %.3f",
+            "\tmirostat = %d, mirostat_lr = %.3f, mirostat_ent = %.3f, adaptive_target = %.3f, adaptive_decay = %.3f\n"
+            "\tngram_bias = %zu patterns",
             penalty_last_n, penalty_repeat, penalty_freq, penalty_present,
             dry_multiplier, dry_base, dry_allowed_length, dry_penalty_last_n,
             top_k, top_p, min_p, xtc_probability, xtc_threshold, typ_p, top_n_sigma, temp,
-            mirostat, mirostat_eta, mirostat_tau, adaptive_target, adaptive_decay);
+            mirostat, mirostat_eta, mirostat_tau, adaptive_target, adaptive_decay,
+            ngram_bias.size());
 
     return std::string(result);
 }
@@ -339,6 +341,25 @@ struct common_sampler * common_sampler_init(
         if (!merged.empty()) {
             samplers.push_back(llama_sampler_init_logit_bias(llama_vocab_n_tokens(vocab), merged.size(), merged.data()));
         }
+    }
+
+    // n-gram bias: static per-request phrase biases, built alongside logit_bias
+    if (!params.ngram_bias.empty()) {
+        if (params.backend_sampling) {
+            LOG_WRN("%s: backend sampling is not compatible with multi_logit_bias, disabling\n", __func__);
+
+            params.backend_sampling = false;
+        }
+        std::vector<llama_ngram_bias> c;
+        c.reserve(std::min<size_t>(params.ngram_bias.size(), 1024));
+        for (size_t i = 0; i < params.ngram_bias.size() && i < 1024; ++i) {
+            const auto & p = params.ngram_bias[i];
+            c.push_back({p.tokens.data(), p.tokens.size(), p.bias});
+        }
+        samplers.push_back(llama_sampler_init_ngram_bias(
+            llama_vocab_n_tokens(vocab), (int32_t) c.size(), c.data()));
+        // NOTE: c borrows p.tokens storage; init copies synchronously,
+        // so c dying at scope end is safe (same as merged above).
     }
 
     if (params.mirostat == 0) {
