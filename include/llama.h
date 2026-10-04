@@ -1618,7 +1618,7 @@ extern "C" {
     // all-wildcard prefix, suffix outside [0, n_vocab), concrete id outside
     // [0, n_vocab), non-finite bias other than -INFINITY, finite |b| > 100.
     // Only the first 1024 patterns are used. Duplicates merge by summing
-    // biases (-INFINITY absorbing). Empty valid set yields a no-op sampler,
+    // biases (-INFINITY absorbing; the sum may exceed 100). Empty valid set yields a no-op sampler,
     // never NULL.
     LLAMA_API struct llama_sampler * llama_sampler_init_ngram_bias(
                              int32_t   n_vocab,

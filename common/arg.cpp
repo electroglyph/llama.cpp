@@ -2268,9 +2268,9 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         {"--multi-logit-bias"}, "IDS:BIAS",
         "n-gram logit bias: comma-separated token IDs, colon, bias.\n"
         "e.g. `--multi-logit-bias \"123,456:-2.0\"` biases token 456 by -2.0 when preceded by 123.\n"
-        "Use -1 for a prefix wildcard (max 2 per pattern, never as the last ID).\n"
-        "Use -inf (or -INFINITY) as BIAS for a ban. Patterns need 2-8 IDs, |BIAS| <= 100, max 1024 patterns; out-of-range entries are skipped at init.\n"
-        "Malformed values (missing colon, non-numeric IDs) error. Repeatable; string input is server-only, resolve IDs via /tokenize.\n"
+        "Use -1 for a prefix wildcard (max 2 per pattern, never as the last ID), e.g. `\"123,-1,456:-1.0\"`; the prefix needs at least one concrete ID.\n"
+        "Use -inf (or -INFINITY) as BIAS for a ban. Patterns need 2-8 IDs, |BIAS| <= 100, max 1024 patterns (first 1024 win); file and server inputs additionally cap wildcard patterns at 256. Out-of-range entries are skipped at init.\n"
+        "Duplicate patterns merge by summing biases (-INFINITY wins). Malformed values (missing colon, non-numeric IDs) error. Repeatable; string input is server-only, resolve IDs via /tokenize.\n"
         "See --multi-logit-bias-file for file input.",
         [](common_params & params, const std::string & value) {
             const size_t sep = value.rfind(':');
@@ -2303,7 +2303,9 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     ).set_sampling());
     add_opt(common_arg(
         {"--multi-logit-bias-file"}, "FNAME",
-        "file with JSON array of {\"sequence\",\"bias\"} (sequence: string, int array, or mixed; bias: number or false/-inf/-INFINITY)",
+        "file with JSON array of {\"sequence\",\"bias\"} entries, e.g. [{\"sequence\": [123, 456], \"bias\": -2.0}, {\"sequence\": \"Hello\", \"bias\": false}].\n"
+        "sequence is a string (tokenized exact), an int array (verbatim IDs, -1/null = prefix wildcard), or a mixed array of strings and int/null; bias is a number (|bias| <= 100) or false/-inf/-INFINITY for a ban.\n"
+        "Patterns need 2-8 tokens post-tokenize with at least one concrete prefix ID; max 1024 entries (first 1024 win), max 256 wildcard patterns; invalid entries are skipped with a warning.",
         [](common_params & params, const std::string & value) {
             const std::string content = read_file(value);
             const json arr = json::parse(content);
