@@ -2270,7 +2270,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         "e.g. `--multi-logit-bias \"123,456:-2.0\"` biases token 456 by -2.0 when preceded by 123.\n"
         "Use -1 for a prefix wildcard (max 2 per pattern, never as the last ID), e.g. `\"123,-1,456:-1.0\"`; the prefix needs at least one concrete ID.\n"
         "Use -inf (or -INFINITY) as BIAS for a ban. Patterns need 2-8 IDs, |BIAS| <= 100, max 1024 patterns (first 1024 win); file and server inputs additionally cap wildcard patterns at 256. Out-of-range entries are skipped at init.\n"
-        "Duplicate patterns merge by summing biases (-INFINITY wins). Malformed values (missing colon, non-numeric IDs) error. Repeatable; string input is server-only, resolve IDs via /tokenize.\n"
+        "Duplicate patterns merge by summing biases (-INFINITY wins; the sum may exceed 100). Malformed values (missing colon, non-numeric IDs) error. Repeatable; string input is server-only, resolve IDs via /tokenize.\n"
         "See --multi-logit-bias-file for file input.",
         [](common_params & params, const std::string & value) {
             const size_t sep = value.rfind(':');
