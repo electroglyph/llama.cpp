@@ -4138,6 +4138,27 @@ static void llama_sampler_ngram_bias_apply(struct llama_sampler * smpl, llama_to
     ctx->scratch_a.push_back(0);
     const size_t depth_max = std::min(ctx->hist.size(), (size_t) (ctx->n_max - 1));
     bool changed = false;
+    // finite candidate count, filled in on the first ban hit; a ban that
+    // would take the last finite logit is skipped so sampling never deadlocks
+    long n_finite = -1;
+    auto try_ban = [&](size_t idx) {
+        if (cur_p->data[idx].logit == -INFINITY) {
+            return;
+        }
+        if (n_finite < 0) {
+            n_finite = 0;
+            for (size_t i = 0; i < cur_p->size; ++i) {
+                if (cur_p->data[i].logit != -INFINITY) {
+                    ++n_finite;
+                }
+            }
+        }
+        if (n_finite > 1) {
+            cur_p->data[idx].logit = -INFINITY;
+            --n_finite;
+            changed = true;
+        }
+    };
     for (size_t d = 0; d < depth_max; ++d) {
         const llama_token tok = ctx->hist.rat(d);
         ctx->scratch_b.clear();
@@ -4160,30 +4181,26 @@ static void llama_sampler_ngram_bias_apply(struct llama_sampler * smpl, llama_to
         for (const int32_t node_idx : ctx->scratch_a) {
             const auto & nd = (*ctx->trie)[(size_t) node_idx];
             for (const auto & h : nd.out) {
-                bool applied = false;
                 // fast path when candidates are id-ordered; else scan by id
                 if (h.suffix >= 0 && (size_t) h.suffix < cur_p->size && cur_p->data[h.suffix].id == h.suffix) {
                     if (h.bias == -INFINITY) {
-                        cur_p->data[h.suffix].logit = -INFINITY;
+                        try_ban((size_t) h.suffix);
                     } else if (cur_p->data[h.suffix].logit != -INFINITY) {
                         cur_p->data[h.suffix].logit += h.bias;
+                        changed = true;
                     }
-                    applied = true;
                 } else {
                     for (size_t i = 0; i < cur_p->size; ++i) {
                         if (cur_p->data[i].id == h.suffix) {
                             if (h.bias == -INFINITY) {
-                                cur_p->data[i].logit = -INFINITY;
+                                try_ban(i);
                             } else if (cur_p->data[i].logit != -INFINITY) {
                                 cur_p->data[i].logit += h.bias;
+                                changed = true;
                             }
-                            applied = true;
                             break;
                         }
                     }
-                }
-                if (applied) {
-                    changed = true;
                 }
             }
         }

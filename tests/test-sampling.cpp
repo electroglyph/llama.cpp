@@ -619,6 +619,73 @@ static void test_ngram_bias() {
         GGML_ASSERT(cur_p.data[2].logit == -INFINITY);
         llama_sampler_free(smpl);
     }
+    // ban guard: bans never take the last finite logit, so no all -INFINITY deadlock
+    {
+        // ban every continuation after 1: exactly one survivor stays finite
+        std::vector<std::vector<llama_token>> store;
+        std::vector<llama_ngram_bias> pats;
+        for (llama_token i = 0; i < V; ++i) {
+            store.push_back({1, i});
+            pats.push_back({store.back().data(), 2, -INFINITY});
+        }
+        bool sorted = true;
+        auto out = ngram_run(V, pats, {1}, &sorted, nullptr, true);
+        int n_finite = 0;
+        for (int i = 0; i < V; ++i) {
+            if (out[i] != -INFINITY) {
+                n_finite++;
+                GGML_ASSERT(out[i] == 0.0f);
+            }
+        }
+        GGML_ASSERT(n_finite == 1);
+        GGML_ASSERT(sorted == false);
+        // deterministic: same survivor across runs (merged map order bans 0..V-2, spares V-1)
+        GGML_ASSERT(out[V - 1] == 0.0f);
+        auto out2 = ngram_run(V, pats, {1});
+        GGML_ASSERT(out == out2);
+        // same survivor via the id-scan path (reversed candidates)
+        llama_sampler * smpl = llama_sampler_init_ngram_bias(V, (int32_t) pats.size(), pats.data());
+        llama_sampler_accept(smpl, 1);
+        std::vector<llama_token_data> cur;
+        for (llama_token i = V - 1; i >= 0; --i) cur.push_back({i, 0.0f, 0.0f});
+        llama_token_data_array cur_p = {cur.data(), cur.size(), -1, false};
+        llama_sampler_apply(smpl, &cur_p);
+        int surv = -1;
+        for (size_t i = 0; i < cur_p.size; ++i) {
+            if (cur_p.data[i].logit != -INFINITY) {
+                GGML_ASSERT(surv == -1);
+                surv = cur_p.data[i].id;
+            }
+        }
+        GGML_ASSERT(surv == V - 1);
+        llama_sampler_free(smpl);
+    }
+    // partial bans still land fully when survivors remain
+    {
+        llama_token a[] = {1, 2};
+        llama_token b[] = {1, 3};
+        std::vector<llama_ngram_bias> pats = {{a, 2, -INFINITY}, {b, 2, -INFINITY}};
+        auto out = ngram_run(V, pats, {1});
+        GGML_ASSERT(out[2] == -INFINITY);
+        GGML_ASSERT(out[3] == -INFINITY);
+        for (int i = 0; i < V; ++i) {
+            if (i != 2 && i != 3) GGML_ASSERT(out[i] == 0.0f);
+        }
+    }
+    // redundant-only bans change nothing, not even the sorted flag
+    {
+        llama_token a[] = {1, 2};
+        std::vector<llama_ngram_bias> pats = {{a, 2, -INFINITY}};
+        llama_sampler * smpl = llama_sampler_init_ngram_bias(V, 1, pats.data());
+        llama_sampler_accept(smpl, 1);
+        std::vector<llama_token_data> cur;
+        for (llama_token i = 0; i < V; ++i) cur.push_back({i, i == 2 ? -INFINITY : 0.0f, 0.0f});
+        llama_token_data_array cur_p = {cur.data(), cur.size(), -1, true};
+        llama_sampler_apply(smpl, &cur_p);
+        GGML_ASSERT(cur_p.data[2].logit == -INFINITY);
+        GGML_ASSERT(cur_p.sorted == true);
+        llama_sampler_free(smpl);
+    }
     // name and purity: no selected, no RNG, sorted=false on hit only
     {
         llama_token t[] = {1, 2};
