@@ -131,6 +131,8 @@
 | `--mirostat-lr N` | Mirostat learning rate, parameter eta (default: 0.10) |
 | `--mirostat-ent N` | Mirostat target entropy, parameter tau (default: 5.00) |
 | `-l, --logit-bias TOKEN_ID(+/-)BIAS` | modifies the likelihood of token appearing in the completion,<br/>i.e. `--logit-bias 15043+1` to increase likelihood of token ' Hello',<br/>or `--logit-bias 15043-1` to decrease likelihood of token ' Hello' |
+| `--multi-logit-bias IDS:BIAS` | n-gram logit bias: comma-separated token IDs, colon, bias.<br/>e.g. `--multi-logit-bias "123,456:-2.0"` biases token 456 by -2.0 when preceded by 123.<br/>Use -1 for a prefix wildcard (max 2 per pattern, never as the last ID).<br/>Use -inf (or -INFINITY) as BIAS for a ban. Patterns need 2-8 IDs, \|BIAS\| <= 100, max 1024 patterns; out-of-range entries are skipped at init.<br/>Malformed values (missing colon, non-numeric IDs) error. Repeatable; string input is server-only, resolve IDs via /tokenize.<br/>See --multi-logit-bias-file for file input. |
+| `--multi-logit-bias-file FNAME` | file with JSON array of {"sequence","bias"} (sequence: string, int array, or mixed; bias: number or false/-inf/-INFINITY) |
 | `--grammar GRAMMAR` | BNF-like grammar to constrain generations (see samples in grammars/ dir) |
 | `--grammar-file FNAME` | file to read grammar from |
 | `-j, --json-schema SCHEMA` | JSON schema to constrain generations (https://json-schema.org/), e.g. `{"type": "object"}` for any JSON object |
@@ -204,6 +206,7 @@
 | `--spec-draft-p-split, --draft-p-split P` | speculative decoding split probability (default: 0.10)<br/>(env: LLAMA_ARG_SPEC_DRAFT_P_SPLIT) |
 | `--spec-draft-p-min, --draft-p-min P` | minimum speculative decoding probability (greedy) (default: 0.00)<br/>(env: LLAMA_ARG_SPEC_DRAFT_P_MIN) |
 | `--spec-draft-backend-sampling, --no-spec-draft-backend-sampling` | offload draft sampling to the backend (default: enabled)<br/>(env: LLAMA_ARG_SPEC_DRAFT_BACKEND_SAMPLING) |
+| `--spec-draft-sampling {greedy,probabilistic}` | how the draft is sampled: greedy takes its argmax, probabilistic samples it and has the target verify by rejection sampling (default: greedy)<br/>(env: LLAMA_ARG_SPEC_DRAFT_SAMPLING) |
 | `--spec-draft-device, -devd, --device-draft <dev1,dev2,..>` | comma-separated list of devices to use for offloading the draft model (none = don't offload, default: follows --device)<br/>use --list-devices to see a list of available devices |
 | `--spec-draft-ngl, -ngld, --gpu-layers-draft, --n-gpu-layers-draft N` | max. number of draft model layers to store in VRAM, either an exact number, 'auto', or 'all' (default: auto)<br/>(env: LLAMA_ARG_N_GPU_LAYERS_DRAFT) |
 | `--spec-draft-model, -md, --model-draft FNAME` | draft model for speculative decoding (default: unused)<br/>(env: LLAMA_ARG_SPEC_DRAFT_MODEL) |

@@ -1213,6 +1213,173 @@ common_decision_type common_get_decision_type(const struct llama_model * model) 
     return common_decision_type_from_string(buf);
 }
 
+// resolve staged file entries once vocab exists
+static void common_resolve_ngram_bias_pending(const llama_vocab * vocab, common_params_sampling & s) {
+    if (s.ngram_bias_pending.empty()) {
+        return;
+    }
+    const int n_vocab = llama_vocab_n_tokens(vocab);
+    size_t n_skipped = 0;
+    size_t n_wild_patterns = 0;
+    for (const auto & p : s.ngram_bias) {
+        for (size_t k = 0; k + 1 < p.tokens.size(); ++k) {
+            if (p.tokens[k] == -1) {
+                n_wild_patterns++;
+                break;
+            }
+        }
+    }
+
+    size_t idx = 0;
+    for (const auto & el : s.ngram_bias_pending) {
+        if (s.ngram_bias.size() >= 1024) {
+            n_skipped++;
+            idx++;
+            continue;
+        }
+        float bias = 0.0f;
+        bool have_bias = false;
+        try {
+            const auto & bv = el.at("bias");
+            if (bv.is_string()) {
+                const std::string bs = bv.get<std::string>();
+                if (bs == "-inf" || bs == "-INFINITY") {
+                    bias = -INFINITY;
+                    have_bias = true;
+                }
+            } else {
+                have_bias = common_ngram_bias_parse_bias(bv, bias);
+            }
+        } catch (const common_json_error &) {
+            have_bias = false;
+        }
+        if (!have_bias) {
+            n_skipped++;
+            idx++;
+            continue;
+        }
+        if (!std::isfinite(bias) && bias != -INFINITY) {
+            n_skipped++;
+            idx++;
+            continue;
+        }
+        if (std::isfinite(bias) && fabsf(bias) > 100.0f) {
+            n_skipped++;
+            idx++;
+            continue;
+        }
+        llama_tokens toks;
+        bool bad = false;
+        try {
+            const auto & seq = el.at("sequence");
+            if (seq.is_string()) {
+                toks = common_tokenize(vocab, seq.get<std::string>(), false, false);
+            } else if (seq.is_array()) {
+                bool is_mixed = false;
+                for (const auto & t : seq) {
+                    if (t.is_string()) {
+                        is_mixed = true;
+                        break;
+                    }
+                }
+                if (!is_mixed) {
+                    if (seq.size() > 8) {
+                        n_skipped++;
+                        idx++;
+                        continue;
+                    }
+                    toks.reserve(seq.size());
+                    for (const auto & t : seq) {
+                        if (t.is_null()) {
+                            toks.push_back(-1);
+                            continue;
+                        }
+                        if (!t.is_number_integer()) {
+                            bad = true;
+                            break;
+                        }
+                        const double dv = t.get<double>();
+                        if (dv == -1.0) {
+                            toks.push_back(-1);
+                            continue;
+                        }
+                        if (dv < 0.0 || dv >= (double) n_vocab) {
+                            bad = true;
+                            break;
+                        }
+                        toks.push_back((llama_token) (int64_t) dv);
+                    }
+                    if (bad) {
+                        n_skipped++;
+                        idx++;
+                        continue;
+                    }
+                } else {
+                    for (const auto & t : seq) {
+                        if (t.is_string()) {
+                            const auto ids = common_tokenize(vocab, t.get<std::string>(), false, false);
+                            toks.insert(toks.end(), ids.begin(), ids.end());
+                            continue;
+                        }
+                        if (t.is_null()) {
+                            toks.push_back(-1);
+                            continue;
+                        }
+                        if (!t.is_number_integer()) {
+                            bad = true;
+                            break;
+                        }
+                        const double dv = t.get<double>();
+                        if (dv == -1.0) {
+                            toks.push_back(-1);
+                            continue;
+                        }
+                        if (dv < 0.0 || dv >= (double) n_vocab) {
+                            bad = true;
+                            break;
+                        }
+                        toks.push_back((llama_token) (int64_t) dv);
+                    }
+                    if (bad) {
+                        n_skipped++;
+                        idx++;
+                        continue;
+                    }
+                }
+            } else {
+                n_skipped++;
+                idx++;
+                continue;
+            }
+        } catch (const common_json_error &) {
+            n_skipped++;
+            idx++;
+            continue;
+        }
+        int n_wild = 0;
+        int n_concrete = 0;
+        if (!common_ngram_bias_check_ids(toks, n_wild, n_concrete)) {
+            n_skipped++;
+            idx++;
+            continue;
+        }
+        if (n_wild > 0) {
+            if (n_wild_patterns >= 256) {
+                n_skipped++;
+                idx++;
+                continue;
+            }
+            n_wild_patterns++;
+        }
+        s.ngram_bias.push_back({std::move(toks), bias});
+        idx++;
+    }
+    if (n_skipped) {
+        COM_WRN("multi_logit_bias: skipped %zu invalid entries\n", n_skipped);
+    }
+    s.ngram_bias_pending.clear();
+}
+
 common_init_result::common_init_result(common_params & params, bool model_only) :
     pimpl(new impl{}) {
     auto mparams = common_model_params_to_llama(params);
@@ -1321,6 +1488,8 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
                 params.sampling.logit_bias.end(),
                 params.sampling.logit_bias_eog.begin(), params.sampling.logit_bias_eog.end());
     }
+
+    common_resolve_ngram_bias_pending(vocab, params.sampling);
 
     // init the backend samplers as part of the context creation
     pimpl->samplers.resize(cparams.n_seq_max);

@@ -2,9 +2,12 @@
 #include "common.h"
 #include "download.h"
 #include "llama.h"
+#include "sampling.h"
 #include "speculative.h"
 
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <limits>
 #include <string>
 #include <vector>
@@ -302,6 +305,131 @@ static void test(void) {
     assert(params.lora_adapters[1].path == "file2,2.gguf");
     assert(params.lora_adapters[2].path == "file3\"3\".gguf");
     assert(params.lora_adapters[3].path == "file4\".gguf");
+
+    printf("test-arg-parser: test multi_logit_bias file\n\n");
+
+    {
+        auto write_tmp = [](const std::string & name, const std::string & content) {
+            const auto path = std::filesystem::temp_directory_path() / name;
+            std::ofstream out(path);
+            out << content;
+            out.close();
+            return path.string();
+        };
+        // 1. array with ID + string entries stays raw in pending
+        {
+            common_params p;
+            const auto fname = write_tmp("mlb_array.json",
+                "[{\"sequence\":[123,456],\"bias\":-2.0},{\"sequence\":\" wash\",\"bias\":false}]");
+            argv = {"binary_name", "-m", "dummy.gguf", "--multi-logit-bias-file", fname};
+            assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), p, LLAMA_EXAMPLE_COMMON));
+            assert(p.sampling.ngram_bias_pending.size() == 2);
+            assert(p.sampling.ngram_bias_pending[0].at("bias").get<float>() == -2.0f);
+            assert(p.sampling.ngram_bias_pending[1].at("bias").is_boolean());
+            std::filesystem::remove(fname);
+        }
+        // 2. null/-1/mixed/bool/nested stored raw at parse
+        {
+            common_params p;
+            const auto fname = write_tmp("mlb_mixed.json",
+                "[{\"sequence\":[1,null],\"bias\":-1.0},"
+                "{\"sequence\":[1,-1],\"bias\":false},"
+                "{\"sequence\":[\"Hello \",null,\" world\"],\"bias\":-2.0},"
+                "{\"sequence\":[\"a\",-1,5],\"bias\":-1.0},"
+                "{\"sequence\":[\"a\",true],\"bias\":-1.0},"
+                "{\"sequence\":[[\"nested\"]],\"bias\":-1.0}]");
+            argv = {"binary_name", "-m", "dummy.gguf", "--multi-logit-bias-file", fname};
+            assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), p, LLAMA_EXAMPLE_COMMON));
+            assert(p.sampling.ngram_bias_pending.size() == 6);
+            std::filesystem::remove(fname);
+        }
+        // 3. -inf alias stored raw at parse
+        {
+            common_params p;
+            const auto fname = write_tmp("mlb_infal.json", "[{\"sequence\":[1,2],\"bias\":\"-inf\"}]");
+            argv = {"binary_name", "-m", "dummy.gguf", "--multi-logit-bias-file", fname};
+            assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), p, LLAMA_EXAMPLE_COMMON));
+            assert(p.sampling.ngram_bias_pending.size() == 1);
+            assert(p.sampling.ngram_bias_pending[0].at("bias").get<std::string>() == "-inf");
+            // shared helper rejects string bias; resolve maps alias to -INFINITY
+            float b = 0.0f;
+            assert(!common_ngram_bias_parse_bias(p.sampling.ngram_bias_pending[0].at("bias"), b));
+            std::filesystem::remove(fname);
+        }
+        // 4. parse-skipped vs resolve-skipped split
+        {
+            common_params p;
+            const auto fname = write_tmp("mlb_skip.json",
+                "[42,"
+                "{\"bias\":-1.0},"
+                "{\"sequence\":[1],\"bias\":-1.0},"
+                "{\"sequence\":[1,-1],\"bias\":-1.0},"
+                "{\"sequence\":[1,2],\"bias\":101.0}]");
+            argv = {"binary_name", "-m", "dummy.gguf", "--multi-logit-bias-file", fname};
+            assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), p, LLAMA_EXAMPLE_COMMON));
+            // 42 and missing sequence are parse-skipped, rest stored raw for resolve
+            assert(p.sampling.ngram_bias_pending.size() == 3);
+            std::filesystem::remove(fname);
+        }
+        // 5. whole-file errors return false
+        {
+            common_params p;
+            const auto f1 = write_tmp("mlb_obj.json", "{\"sequence\":[1,2],\"bias\":-1.0}");
+            argv = {"binary_name", "-m", "dummy.gguf", "--multi-logit-bias-file", f1};
+            assert(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), p, LLAMA_EXAMPLE_COMMON));
+            std::filesystem::remove(f1);
+            const auto f2 = write_tmp("mlb_broken.json", "[broken");
+            argv = {"binary_name", "-m", "dummy.gguf", "--multi-logit-bias-file", f2};
+            assert(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), p, LLAMA_EXAMPLE_COMMON));
+            std::filesystem::remove(f2);
+        }
+        // 6. missing file returns false
+        {
+            common_params p;
+            const auto missing = (std::filesystem::temp_directory_path() / "mlb_missing_xyz.json").string();
+            std::filesystem::remove(missing);
+            argv = {"binary_name", "-m", "dummy.gguf", "--multi-logit-bias-file", missing};
+            assert(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), p, LLAMA_EXAMPLE_COMMON));
+        }
+        // 7. repeatable: inline in ngram_bias, files in pending flag order
+        {
+            common_params p;
+            const auto fa = write_tmp("mlb_a.json", "[{\"sequence\":[1,2],\"bias\":-1.0}]");
+            const auto fb = write_tmp("mlb_b.json", "[{\"sequence\":[3,4],\"bias\":-2.0}]");
+            argv = {"binary_name", "-m", "dummy.gguf", "--multi-logit-bias-file", fa, "--multi-logit-bias", "5,6:-3.0", "--multi-logit-bias-file", fb};
+            assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), p, LLAMA_EXAMPLE_COMMON));
+            assert(p.sampling.ngram_bias.size() == 1);
+            assert(p.sampling.ngram_bias_pending.size() == 2);
+            assert(p.sampling.ngram_bias_pending[0].at("sequence").at((size_t) 0).get<int>() == 1);
+            assert(p.sampling.ngram_bias_pending[1].at("sequence").at((size_t) 0).get<int>() == 3);
+            std::filesystem::remove(fa);
+            std::filesystem::remove(fb);
+        }
+        // 8. inline with empty IDS is malformed and errors (not silently skipped)
+        {
+            common_params p;
+            argv = {"binary_name", "-m", "dummy.gguf", "--multi-logit-bias", ":-3.0"};
+            assert(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), p, LLAMA_EXAMPLE_COMMON));
+            argv = {"binary_name", "-m", "dummy.gguf", "--multi-logit-bias", ":"};
+            assert(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), p, LLAMA_EXAMPLE_COMMON));
+            // single ID still parses (skipped later at init for failing 2-8)
+            argv = {"binary_name", "-m", "dummy.gguf", "--multi-logit-bias", "5:-3.0"};
+            assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), p, LLAMA_EXAMPLE_COMMON));
+            assert(p.sampling.ngram_bias.size() == 1);
+        }
+        // shared helper equivalence
+        {
+            float b = 0.0f;
+            const auto jfalse = common_json::parse("false");
+            assert(common_ngram_bias_parse_bias(jfalse, b) && b == -INFINITY);
+            llama_tokens toks = {1, -1, 2};
+            int nw = 0, nc = 0;
+            // suffix is concrete so prefix check passes (needs vocab-independent part)
+            assert(common_ngram_bias_check_ids(toks, nw, nc) && nw == 1 && nc == 1);
+            llama_tokens bad = {1};
+            assert(!common_ngram_bias_check_ids(bad, nw, nc));
+        }
+    }
 
 // skip this part on windows, because setenv is not supported
 #ifdef _WIN32

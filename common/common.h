@@ -6,6 +6,7 @@
 
 #include "ggml-opt.h"
 #include "ggml.h"
+#include "json.h"
 #include "llama.h"
 
 #include <array>
@@ -285,6 +286,7 @@ struct common_params_sampling {
         float bias = 0.0f;
     };
     std::vector<common_ngram_bias> ngram_bias;
+    std::vector<common_json> ngram_bias_pending;
 
     // The assistant generation prompt already prefilled into the prompt.
     // Fed to the grammar sampler (to advance past pre-existing tokens) and used

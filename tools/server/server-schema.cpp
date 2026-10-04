@@ -487,7 +487,7 @@ std::vector<std::unique_ptr<field>> make_llama_cmpl_schema(const common_params &
         }));
 
     add((new field_json("multi_logit_bias"))
-        ->set_desc("Static per-request n-gram logit biases. Array of {sequence, bias} objects; sequence is a string (exact tokenize) or int array (-1/null = prefix wildcard), bias is a number or false for ban")
+        ->set_desc("Static per-request n-gram logit biases. Array of {sequence, bias} objects; sequence is a string (exact tokenize), int array (-1/null = prefix wildcard), or mixed string/int array, bias is a number or false for ban")
         ->set_handler([&](field_eval_context & ctx, const json & data) {
             if (ctx.vocab == nullptr) {
                 return;
@@ -500,17 +500,12 @@ std::vector<std::unique_ptr<field>> make_llama_cmpl_schema(const common_params &
             const int n_vocab = llama_vocab_n_tokens(ctx.vocab);
             size_t n_skipped = 0;
             size_t n_wild_patterns = 0;
-            auto parse_bias = [](const json & v, float & bias) -> bool {
-                if (v.is_number())                        { bias = v.get<float>(); return true; }
-                if (v.is_boolean() && !v.get<bool>())     { bias = -INFINITY;      return true; }
-                return false;
-            };
             for (const auto & el : arr) {
                 if (ctx.params.sampling.ngram_bias.size() >= 1024) { n_skipped++; continue; }
                 if (!el.is_object()) { n_skipped++; continue; }
                 if (!el.contains("sequence") || !el.contains("bias")) { n_skipped++; continue; }
                 float bias;
-                if (!parse_bias(el.at("bias"), bias)) { n_skipped++; continue; }
+                if (!common_ngram_bias_parse_bias(el.at("bias"), bias)) { n_skipped++; continue; }
                 if (!std::isfinite(bias) && bias != -INFINITY) { n_skipped++; continue; }
                 if (std::isfinite(bias) && fabsf(bias) > 100.0f) { n_skipped++; continue; }
                 llama_tokens toks;
@@ -518,35 +513,53 @@ std::vector<std::unique_ptr<field>> make_llama_cmpl_schema(const common_params &
                 if (seq.is_string()) {
                     toks = common_tokenize(ctx.vocab, seq.get<std::string>(), false);
                 } else if (seq.is_array()) {
-                    if (seq.size() > 8) { n_skipped++; continue; }
-                    toks.reserve(seq.size());
-                    bool bad = false;
+                    bool is_mixed = false;
                     for (const auto & t : seq) {
-                        if (t.is_null()) { toks.push_back(-1); continue; }
-                        // No is_number_unsigned; is_number_integer covers both.
-                        // Read via double so huge values skip instead of
-                        // wrapping to -1 or truncating to 0 (wrong-token bias).
-                        if (!t.is_number_integer()) { bad = true; break; }
-                        const double dv = t.get<double>();
-                        if (dv == -1.0) { toks.push_back(-1); continue; }
-                        if (dv < 0.0 || dv >= (double) n_vocab) { bad = true; break; }
-                        toks.push_back((llama_token) (int64_t) dv);
+                        if (t.is_string()) {
+                            is_mixed = true;
+                            break;
+                        }
                     }
-                    if (bad) { n_skipped++; continue; }
+                    if (!is_mixed) {
+                        if (seq.size() > 8) { n_skipped++; continue; }
+                        toks.reserve(seq.size());
+                        bool bad = false;
+                        for (const auto & t : seq) {
+                            if (t.is_null()) { toks.push_back(-1); continue; }
+                            // No is_number_unsigned; is_number_integer covers both.
+                            // Read via double so huge values skip instead of
+                            // wrapping to -1 or truncating to 0 (wrong-token bias).
+                            if (!t.is_number_integer()) { bad = true; break; }
+                            const double dv = t.get<double>();
+                            if (dv == -1.0) { toks.push_back(-1); continue; }
+                            if (dv < 0.0 || dv >= (double) n_vocab) { bad = true; break; }
+                            toks.push_back((llama_token) (int64_t) dv);
+                        }
+                        if (bad) { n_skipped++; continue; }
+                    } else {
+                        bool bad = false;
+                        for (const auto & t : seq) {
+                            if (t.is_string()) {
+                                const auto ids = common_tokenize(ctx.vocab, t.get<std::string>(), false);
+                                toks.insert(toks.end(), ids.begin(), ids.end());
+                                continue;
+                            }
+                            if (t.is_null()) { toks.push_back(-1); continue; }
+                            // No is_number_unsigned; is_number_integer covers both.
+                            // Read via double so huge values skip instead of
+                            // wrapping to -1 or truncating to 0 (wrong-token bias).
+                            if (!t.is_number_integer()) { bad = true; break; }
+                            const double dv = t.get<double>();
+                            if (dv == -1.0) { toks.push_back(-1); continue; }
+                            if (dv < 0.0 || dv >= (double) n_vocab) { bad = true; break; }
+                            toks.push_back((llama_token) (int64_t) dv);
+                        }
+                        if (bad) { n_skipped++; continue; }
+                    }
                 } else { n_skipped++; continue; }
-                if (toks.size() < 2 || toks.size() > 8) { n_skipped++; continue; }
-                if (toks.back() == -1) { n_skipped++; continue; }
                 int n_wild = 0;
                 int n_concrete_prefix = 0;
-                for (size_t k = 0; k + 1 < toks.size(); ++k) {
-                    if (toks[k] == -1) {
-                        n_wild++;
-                    } else {
-                        n_concrete_prefix++;
-                    }
-                }
-                if (n_wild > 2) { n_skipped++; continue; }
-                if (n_concrete_prefix == 0) { n_skipped++; continue; }
+                if (!common_ngram_bias_check_ids(toks, n_wild, n_concrete_prefix)) { n_skipped++; continue; }
                 if (n_wild > 0) {
                     if (n_wild_patterns >= 256) { n_skipped++; continue; }
                     n_wild_patterns++;

@@ -3,6 +3,7 @@
 #include "llama.h"
 
 #include "common.h"
+#include "json.h"
 
 #include <string>
 #include <vector>
@@ -117,6 +118,10 @@ std::string common_sampler_type_to_str(enum common_sampler_type cnstr);
 
 std::vector<enum common_sampler_type> common_sampler_types_from_names(const std::vector<std::string> & names);
 std::vector<enum common_sampler_type> common_sampler_types_from_chars(const std::string & chars);
+
+// shared ngram-bias validation (server + CLI resolve use same logic)
+bool common_ngram_bias_parse_bias(const common_json & v, float & bias);
+bool common_ngram_bias_check_ids(const llama_tokens & toks, int & n_wild, int & n_concrete);
 
 llama_sampler * llama_sampler_init_llg(const llama_vocab * vocab,
                 const char * grammar_kind, const char * grammar_data);

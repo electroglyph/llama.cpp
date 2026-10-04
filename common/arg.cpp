@@ -2270,7 +2270,8 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         "e.g. `--multi-logit-bias \"123,456:-2.0\"` biases token 456 by -2.0 when preceded by 123.\n"
         "Use -1 for a prefix wildcard (max 2 per pattern, never as the last ID).\n"
         "Use -inf (or -INFINITY) as BIAS for a ban. Patterns need 2-8 IDs, |BIAS| <= 100, max 1024 patterns; out-of-range entries are skipped at init.\n"
-        "Malformed values (missing colon, non-numeric IDs) error. Repeatable; string input is server-only, resolve IDs via /tokenize.",
+        "Malformed values (missing colon, non-numeric IDs) error. Repeatable; string input is server-only, resolve IDs via /tokenize.\n"
+        "See --multi-logit-bias-file for file input.",
         [](common_params & params, const std::string & value) {
             const size_t sep = value.rfind(':');
             if (sep == std::string::npos) throw std::invalid_argument("invalid input format");
@@ -2287,6 +2288,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                 if (id < INT32_MIN || id > INT32_MAX) throw std::invalid_argument("invalid input format");
                 toks.push_back((llama_token) id);
             }
+            if (toks.empty()) throw std::invalid_argument("invalid input format");
             const std::string bs = value.substr(sep + 1);
             float bias;
             if (bs == "-inf" || bs == "-INFINITY") bias = -INFINITY;
@@ -2297,6 +2299,32 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                 if (end != bs.size()) throw std::invalid_argument("invalid input format");
             }
             params.sampling.ngram_bias.push_back({std::move(toks), bias});
+        }
+    ).set_sampling());
+    add_opt(common_arg(
+        {"--multi-logit-bias-file"}, "FNAME",
+        "file with JSON array of {\"sequence\",\"bias\"} (sequence: string, int array, or mixed; bias: number or false/-inf/-INFINITY)",
+        [](common_params & params, const std::string & value) {
+            const std::string content = read_file(value);
+            const json arr = json::parse(content);
+            if (!arr.is_array()) {
+                throw std::invalid_argument("expected JSON array in multi_logit_bias file");
+            }
+            size_t idx = 0;
+            for (const auto & el : arr) {
+                if (!el.is_object()) {
+                    LOG_WRN("multi_logit_bias file '%s' index %zu: skipped not an object\n", value.c_str(), idx);
+                    idx++;
+                    continue;
+                }
+                if (!el.contains("sequence") || !el.contains("bias")) {
+                    LOG_WRN("multi_logit_bias file '%s' index %zu: skipped missing sequence/bias\n", value.c_str(), idx);
+                    idx++;
+                    continue;
+                }
+                params.sampling.ngram_bias_pending.push_back(el);
+                idx++;
+            }
         }
     ).set_sampling());
     add_opt(common_arg(

@@ -2,6 +2,7 @@
 
 #include "common.h"
 #include "fit.h"
+#include "json.h"
 #include "log.h"
 #include "reasoning-budget.h"
 
@@ -1066,4 +1067,41 @@ std::vector<common_sampler_type> common_sampler_types_from_chars(const std::stri
     }
 
     return samplers;
+}
+
+bool common_ngram_bias_parse_bias(const common_json & v, float & bias) {
+    if (v.is_number()) {
+        bias = v.get<float>();
+        return true;
+    }
+    if (v.is_boolean() && !v.get<bool>()) {
+        bias = -INFINITY;
+        return true;
+    }
+    return false;
+}
+
+bool common_ngram_bias_check_ids(const llama_tokens & toks, int & n_wild, int & n_concrete) {
+    if (toks.size() < 2 || toks.size() > 8) {
+        return false;
+    }
+    if (toks.back() == -1) {
+        return false;
+    }
+    n_wild = 0;
+    n_concrete = 0;
+    for (size_t k = 0; k + 1 < toks.size(); ++k) {
+        if (toks[k] == -1) {
+            n_wild++;
+        } else {
+            n_concrete++;
+        }
+    }
+    if (n_wild > 2) {
+        return false;
+    }
+    if (n_concrete == 0) {
+        return false;
+    }
+    return true;
 }
