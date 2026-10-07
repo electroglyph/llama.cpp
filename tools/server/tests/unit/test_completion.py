@@ -794,6 +794,19 @@ def test_multi_logit_bias_bans_strings_in_output():
         assert got[0] != t0
 
 
+def test_multi_logit_bias_single_token():
+    # single-token entries ban unconditionally: no history required
+    global server
+    server.start()
+    prompt = "I believe the meaning of life is"
+    base, _ = _mlb_baseline(prompt)
+    t0 = base.body["tokens"][0]
+    res = _mlb_complete(prompt, extra={"multi_logit_bias": [{"sequence": [t0], "bias": False}]})
+    echo = res.body["generation_settings"]["multi_logit_bias"]
+    assert echo == [{"sequence": [t0], "bias": False}]
+    assert res.body["tokens"][0] != t0
+
+
 def test_multi_logit_bias_wildcard():
     global server
     server.start()
@@ -858,7 +871,6 @@ def test_multi_logit_bias_negative():
         {"sequence": 42, "bias": -2.0},  # sequence wrong type
         {"sequence": None, "bias": -2.0},  # sequence wrong type
         {"sequence": [lp, -1], "bias": -2.0},  # suffix wildcard
-        {"sequence": [t0], "bias": -2.0},  # length 1
         {"sequence": [lp, -1, -1, -1, t0], "bias": -2.0},  # > 2 wildcards
         {"sequence": [lp, t0, lp, t0, lp, t0, lp, t0, lp], "bias": -2.0},  # L == 9
         {"sequence": [lp, t0], "bias": 101.0},  # |bias| > 100

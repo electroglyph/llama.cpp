@@ -462,7 +462,7 @@ extern "C" {
 
     typedef struct llama_ngram_bias {
         const llama_token * tokens; // len n_tokens; -1 (LLAMA_TOKEN_NULL) == single-token wildcard (prefix only)
-        size_t n_tokens;            // valid range [2, 8]; tokens[n_tokens-1] must be in [0, n_vocab)
+        size_t n_tokens;            // valid range [1, 8]; tokens[n_tokens-1] must be in [0, n_vocab)
         float bias;                 // additive logit delta; -INFINITY bans
     } llama_ngram_bias;
 
@@ -1613,9 +1613,11 @@ extern "C" {
     // tokens is borrowed for the call only (init copies). 0 is a normal id,
     // never a wildcard. -1 (LLAMA_TOKEN_NULL) is the wildcard, allowed only
     // in tokens[0..n_tokens-2], at most 2 per pattern, never as suffix.
-    // Prefix needs at least one concrete token. n_tokens must be in [2, 8].
+    // Prefix needs at least one concrete token. n_tokens must be in [1, 8].
+    // A single-token pattern has an empty prefix: it applies on every step,
+    // exactly like logit_bias (including the ban guard below).
     //
-    // Skipped (never abort): null tokens, n_tokens outside [2, 8],
+    // Skipped (never abort): null tokens, n_tokens outside [1, 8],
     // all-wildcard prefix, suffix outside [0, n_vocab), concrete id outside
     // [0, n_vocab), non-finite bias other than -INFINITY, finite |b| > 100.
     // Only the first 2048 patterns are used. Duplicates merge by summing

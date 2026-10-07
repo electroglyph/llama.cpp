@@ -482,8 +482,14 @@ static void test(void) {
             int nw = 0, nc = 0;
             // suffix is concrete so prefix check passes (needs vocab-independent part)
             assert(common_ngram_bias_check_ids(toks, nw, nc) && nw == 1 && nc == 1);
-            llama_tokens bad = {1};
+            // single concrete token is a valid unconditional bias
+            llama_tokens one = {5};
+            assert(common_ngram_bias_check_ids(one, nw, nc) && nw == 0 && nc == 1);
+            // empty and lone wildcard are rejected
+            llama_tokens bad = {};
             assert(!common_ngram_bias_check_ids(bad, nw, nc));
+            llama_tokens wild1 = {-1};
+            assert(!common_ngram_bias_check_ids(wild1, nw, nc));
         }
     }
 

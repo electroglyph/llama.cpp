@@ -1082,11 +1082,17 @@ bool common_ngram_bias_parse_bias(const common_json & v, float & bias) {
 }
 
 bool common_ngram_bias_check_ids(const llama_tokens & toks, int & n_wild, int & n_concrete) {
-    if (toks.size() < 2 || toks.size() > 8) {
+    if (toks.empty() || toks.size() > 8) {
         return false;
     }
     if (toks.back() == -1) {
         return false;
+    }
+    // single concrete token: unconditional bias, no prefix to check
+    if (toks.size() == 1) {
+        n_wild = 0;
+        n_concrete = 1;
+        return true;
     }
     n_wild = 0;
     n_concrete = 0;

@@ -354,7 +354,8 @@ static void test_ngram_bias() {
         auto out = ngram_run(V, pats, {1});
         GGML_ASSERT(out[2] == -1.0f);
     }
-    // validation: length-0/1, OOR id, id < -1, all-wild prefix, >2 wild, NaN, +inf, |b|>100 skipped
+    // validation: length-0, OOR id, id < -1, all-wild prefix, >2 wild, NaN, +inf, |b|>100 skipped
+    // (length-1 concrete is valid: unconditional bias, asserted below)
     {
         llama_token l1[] = {1};
         llama_token oor[] = {1, 99};
@@ -378,16 +379,35 @@ static void test_ngram_bias() {
         };
         auto out = ngram_run(V, pats, {1});
         GGML_ASSERT(out[2] == -1.0f);
+        GGML_ASSERT(out[1] == -1.0f); // length-1 survives: unconditional bias
+    }
+    // single token: fires with empty history, ban guarded like the rest
+    {
+        llama_token t[] = {3};
+        std::vector<llama_ngram_bias> pats = {{t, 1, -2.0f}};
+        auto out = ngram_run(V, pats, {});
+        GGML_ASSERT(out[3] == -2.0f);
+        auto out_h = ngram_run(V, pats, {7, 8});
+        GGML_ASSERT(out_h[3] == -2.0f);
+        llama_token tb[] = {4};
+        std::vector<llama_ngram_bias> ban = {{tb, 1, -INFINITY}};
+        auto outb = ngram_run(V, ban, {});
+        GGML_ASSERT(outb[4] == -INFINITY);
+        // lone wildcard unigram still rejected
+        llama_token tw[] = {-1};
+        std::vector<llama_ngram_bias> banw = {{tw, 1, -INFINITY}};
+        auto outw = ngram_run(V, banw, {});
+        for (int32_t i = 0; i < V; ++i) {
+            GGML_ASSERT(outw[i] == 0.0f);
+        }
     }
     // isolated skips are observable as the empty-sampler marker
     {
         llama_token t_oor[] = {1, 99};
-        llama_token t_len1[] = {1};
         llama_token t_allw[] = {-1, 2};
         llama_token t_allw2[] = {-1, -1, 2};
         const std::vector<llama_ngram_bias> cases[] = {
             {{t_oor, 2, -1.0f}},
-            {{t_len1, 1, -1.0f}},
             {{t_allw, 2, -1.0f}},
             {{t_allw2, 3, -1.0f}},
         };
