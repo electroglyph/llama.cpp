@@ -4069,7 +4069,7 @@ struct llama_sampler * llama_sampler_init_logit_bias(
 
 // ngram-bias
 
-static constexpr int32_t NGRAM_BIAS_MAX_PATTERNS  = 1024;
+static constexpr int32_t NGRAM_BIAS_MAX_PATTERNS  = 2048;
 static constexpr size_t  NGRAM_BIAS_MAX_LEN       = 8;
 static constexpr float   NGRAM_BIAS_MAX_ABS       = 100.0f;
 static constexpr int32_t NGRAM_BIAS_MAX_WILDCARDS = 2;

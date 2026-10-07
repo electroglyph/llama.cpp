@@ -1618,7 +1618,7 @@ extern "C" {
     // Skipped (never abort): null tokens, n_tokens outside [2, 8],
     // all-wildcard prefix, suffix outside [0, n_vocab), concrete id outside
     // [0, n_vocab), non-finite bias other than -INFINITY, finite |b| > 100.
-    // Only the first 1024 patterns are used. Duplicates merge by summing
+    // Only the first 2048 patterns are used. Duplicates merge by summing
     // biases (-INFINITY absorbing; the sum may exceed 100). A ban that would
     // leave no finite candidate is skipped. Empty valid set yields a no-op sampler,
     // never NULL.

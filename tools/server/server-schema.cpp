@@ -2,6 +2,7 @@
 
 #include "json-schema-to-grammar.h"
 
+#include <cctype>
 #include <cmath>
 
 namespace server_schema {
@@ -487,7 +488,7 @@ std::vector<std::unique_ptr<field>> make_llama_cmpl_schema(const common_params &
         }));
 
     add((new field_json("multi_logit_bias"))
-        ->set_desc("Static per-request n-gram logit biases. Array of {sequence, bias} objects; sequence is a string (exact tokenize), int array (-1/null = prefix wildcard), or mixed string/int array, bias is a number or false for ban")
+        ->set_desc("Static per-request n-gram logit biases. Array of {sequence, bias} objects; sequence is a string (exact tokenize, plus its leading-space form so bans fire mid-sentence), int array (-1/null = prefix wildcard), or mixed string/int array, bias is a number or false for ban")
         ->set_handler([&](field_eval_context & ctx, const json & data) {
             if (ctx.vocab == nullptr) {
                 return;
@@ -500,18 +501,32 @@ std::vector<std::unique_ptr<field>> make_llama_cmpl_schema(const common_params &
             const int n_vocab = llama_vocab_n_tokens(ctx.vocab);
             size_t n_skipped = 0;
             size_t n_wild_patterns = 0;
+            size_t idx = 0;
+            auto skip = [&](const char * why) {
+                SRV_ERR("multi_logit_bias: entry %zu: skipped (%s)\n", idx, why);
+                n_skipped++;
+                idx++;
+            };
             for (const auto & el : arr) {
-                if (ctx.params.sampling.ngram_bias.size() >= 1024) { n_skipped++; continue; }
-                if (!el.is_object()) { n_skipped++; continue; }
-                if (!el.contains("sequence") || !el.contains("bias")) { n_skipped++; continue; }
+                if (ctx.params.sampling.ngram_bias.size() >= 1024) { skip("entry cap (1024) reached"); continue; }
+                if (!el.is_object()) { skip("not an object"); continue; }
+                if (!el.contains("sequence") || !el.contains("bias")) { skip("missing sequence/bias"); continue; }
                 float bias;
-                if (!common_ngram_bias_parse_bias(el.at("bias"), bias)) { n_skipped++; continue; }
-                if (!std::isfinite(bias) && bias != -INFINITY) { n_skipped++; continue; }
-                if (std::isfinite(bias) && fabsf(bias) > 100.0f) { n_skipped++; continue; }
+                if (!common_ngram_bias_parse_bias(el.at("bias"), bias)) { skip("invalid bias"); continue; }
+                if (!std::isfinite(bias) && bias != -INFINITY) { skip("non-finite bias"); continue; }
+                if (std::isfinite(bias) && fabsf(bias) > 100.0f) { skip("bias magnitude exceeds 100"); continue; }
                 llama_tokens toks;
+                llama_tokens toks_sp;
+                bool have_sp = false;
                 const auto & seq = el.at("sequence");
                 if (seq.is_string()) {
-                    toks = common_tokenize(ctx.vocab, seq.get<std::string>(), false);
+                    const std::string text = seq.get<std::string>();
+                    toks = common_tokenize(ctx.vocab, text, false);
+                    // same words tokenize differently mid-sentence: also ban the leading-space form
+                    if (!text.empty() && !std::isspace((unsigned char) text[0])) {
+                        toks_sp = common_tokenize(ctx.vocab, " " + text, false);
+                        have_sp = toks_sp != toks;
+                    }
                 } else if (seq.is_array()) {
                     bool is_mixed = false;
                     for (const auto & t : seq) {
@@ -521,7 +536,7 @@ std::vector<std::unique_ptr<field>> make_llama_cmpl_schema(const common_params &
                         }
                     }
                     if (!is_mixed) {
-                        if (seq.size() > 8) { n_skipped++; continue; }
+                        if (seq.size() > 8) { skip("more than 8 ids"); continue; }
                         toks.reserve(seq.size());
                         bool bad = false;
                         for (const auto & t : seq) {
@@ -535,7 +550,7 @@ std::vector<std::unique_ptr<field>> make_llama_cmpl_schema(const common_params &
                             if (dv < 0.0 || dv >= (double) n_vocab) { bad = true; break; }
                             toks.push_back((llama_token) (int64_t) dv);
                         }
-                        if (bad) { n_skipped++; continue; }
+                        if (bad) { skip("invalid token id"); continue; }
                     } else {
                         bool bad = false;
                         for (const auto & t : seq) {
@@ -554,17 +569,32 @@ std::vector<std::unique_ptr<field>> make_llama_cmpl_schema(const common_params &
                             if (dv < 0.0 || dv >= (double) n_vocab) { bad = true; break; }
                             toks.push_back((llama_token) (int64_t) dv);
                         }
-                        if (bad) { n_skipped++; continue; }
+                        if (bad) { skip("invalid token id"); continue; }
                     }
-                } else { n_skipped++; continue; }
-                int n_wild = 0;
-                int n_concrete_prefix = 0;
-                if (!common_ngram_bias_check_ids(toks, n_wild, n_concrete_prefix)) { n_skipped++; continue; }
-                if (n_wild > 0) {
-                    if (n_wild_patterns >= 256) { n_skipped++; continue; }
-                    n_wild_patterns++;
+                } else { skip("sequence is not a string or array"); continue; }
+                auto commit = [&](llama_tokens form, const char * variant) {
+                    int n_wild = 0;
+                    int n_concrete_prefix = 0;
+                    if (!common_ngram_bias_check_ids(form, n_wild, n_concrete_prefix)) {
+                        SRV_ERR("multi_logit_bias: entry %zu%s: skipped (ids fail length, suffix, wildcard or concrete-prefix checks)\n", idx, variant);
+                        n_skipped++;
+                        return;
+                    }
+                    if (n_wild > 0) {
+                        if (n_wild_patterns >= 256) {
+                            SRV_ERR("multi_logit_bias: entry %zu%s: skipped (wildcard pattern cap (256) reached)\n", idx, variant);
+                            n_skipped++;
+                            return;
+                        }
+                        n_wild_patterns++;
+                    }
+                    ctx.params.sampling.ngram_bias.push_back({std::move(form), bias});
+                };
+                commit(std::move(toks), "");
+                if (have_sp) {
+                    commit(std::move(toks_sp), " leading-space form");
                 }
-                ctx.params.sampling.ngram_bias.push_back({std::move(toks), bias});
+                idx++;
             }
             if (n_skipped) {
                 SRV_ERR("multi_logit_bias: skipped %zu invalid entries\n", n_skipped);

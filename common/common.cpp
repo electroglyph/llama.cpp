@@ -1251,11 +1251,19 @@ static void common_resolve_ngram_bias_pending(const llama_vocab * vocab, common_
             continue;
         }
         llama_tokens toks;
+        llama_tokens toks_sp;
+        bool have_sp = false;
         bool bad = false;
         try {
             const auto & seq = el.at("sequence");
             if (seq.is_string()) {
-                toks = common_tokenize(vocab, seq.get<std::string>(), false, false);
+                const std::string text = seq.get<std::string>();
+                toks = common_tokenize(vocab, text, false, false);
+                // same words tokenize differently mid-sentence: also ban the leading-space form
+                if (!text.empty() && !std::isspace((unsigned char) text[0])) {
+                    toks_sp = common_tokenize(vocab, " " + text, false, false);
+                    have_sp = toks_sp != toks;
+                }
             } else if (seq.is_array()) {
                 bool is_mixed = false;
                 for (const auto & t : seq) {
@@ -1333,21 +1341,29 @@ static void common_resolve_ngram_bias_pending(const llama_vocab * vocab, common_
             skip("invalid entry");
             continue;
         }
-        int n_wild = 0;
-        int n_concrete = 0;
-        if (!common_ngram_bias_check_ids(toks, n_wild, n_concrete)) {
-            skip("ids fail length, suffix, wildcard or concrete-prefix checks");
-            continue;
-        }
-        if (n_wild > 0) {
-            if (n_wild_patterns >= 256) {
-                skip("wildcard pattern cap (256) reached");
-                continue;
+        auto commit = [&](llama_tokens form, const char * variant) {
+            int n_wild = 0;
+            int n_concrete = 0;
+            if (!common_ngram_bias_check_ids(form, n_wild, n_concrete)) {
+                COM_ERR("multi_logit_bias: entry %zu%s: skipped (ids fail length, suffix, wildcard or concrete-prefix checks)\n", idx, variant);
+                n_skipped++;
+                return;
             }
-            n_wild_patterns++;
+            if (n_wild > 0) {
+                if (n_wild_patterns >= 256) {
+                    COM_ERR("multi_logit_bias: entry %zu%s: skipped (wildcard pattern cap (256) reached)\n", idx, variant);
+                    n_skipped++;
+                    return;
+                }
+                n_wild_patterns++;
+            }
+            s.ngram_bias.push_back({std::move(form), bias});
+            n_added++;
+        };
+        commit(std::move(toks), "");
+        if (have_sp) {
+            commit(std::move(toks_sp), " leading-space form");
         }
-        s.ngram_bias.push_back({std::move(toks), bias});
-        n_added++;
         idx++;
     }
     if (n_skipped) {

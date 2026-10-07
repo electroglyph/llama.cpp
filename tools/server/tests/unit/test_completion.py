@@ -736,6 +736,30 @@ def test_multi_logit_bias_string():
         assert res.body["tokens"][0] != t0
 
 
+def test_multi_logit_bias_leading_space():
+    global server
+    server.start()
+    prompt = "I believe the meaning of life is"
+    base, prompt_tokens = _mlb_baseline(prompt)
+    t0 = base.body["tokens"][0]
+    lp = prompt_tokens[-1]
+    text = _mlb_detokenize([lp, t0])
+    ids = _mlb_tokenize(text)
+    assert len(ids) >= 2
+    res = _mlb_complete(prompt, extra={"multi_logit_bias": [{"sequence": text, "bias": -100.0}]})
+    echo = res.body["generation_settings"]["multi_logit_bias"]
+    if not text[:1].isspace():
+        spaced = _mlb_tokenize(" " + text)
+        if spaced != ids:
+            # both the bare and leading-space forms are registered
+            assert echo == [{"sequence": ids, "bias": -100.0}, {"sequence": spaced, "bias": -100.0}]
+            if ids == [lp, t0]:
+                # exact round-trip: the observed bigram is banned, greedy pick changes
+                assert res.body["tokens"][0] != t0
+            return
+    assert echo == [{"sequence": ids, "bias": -100.0}]
+
+
 def test_multi_logit_bias_wildcard():
     global server
     server.start()
