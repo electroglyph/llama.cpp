@@ -1218,8 +1218,8 @@ static void common_resolve_ngram_bias_pending(const llama_vocab * vocab, common_
         idx++;
     };
     for (const auto & el : s.ngram_bias_pending) {
-        if (s.ngram_bias.size() >= 1024) {
-            skip("pattern cap (1024) reached");
+        if (idx >= 1024) {
+            skip("entry cap (1024) reached");
             continue;
         }
         float bias = 0.0f;

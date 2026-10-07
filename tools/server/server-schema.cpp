@@ -508,7 +508,7 @@ std::vector<std::unique_ptr<field>> make_llama_cmpl_schema(const common_params &
                 idx++;
             };
             for (const auto & el : arr) {
-                if (ctx.params.sampling.ngram_bias.size() >= 1024) { skip("entry cap (1024) reached"); continue; }
+                if (idx >= 1024) { skip("entry cap (1024) reached"); continue; }
                 if (!el.is_object()) { skip("not an object"); continue; }
                 if (!el.contains("sequence") || !el.contains("bias")) { skip("missing sequence/bias"); continue; }
                 float bias;
