@@ -2360,6 +2360,8 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             if (params.sampling.ngram_bias_pending.size() == n_before) {
                 throw std::invalid_argument("multi_logit_bias file contains no usable entries");
             }
+            LOG_INF("multi_logit_bias file '%s': staged %zu entries\n",
+                value.c_str(), params.sampling.ngram_bias_pending.size() - n_before);
         }
     ).set_sampling());
     add_opt(common_arg(

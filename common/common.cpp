@@ -1357,6 +1357,7 @@ static void common_resolve_ngram_bias_pending(const llama_vocab * vocab, common_
         // a file was given but nothing survived: fail loudly instead of serving unbanned
         throw std::runtime_error(string_format("multi_logit_bias: file produced 0 valid patterns (skipped %zu invalid entries)", n_skipped));
     }
+    COM_INF("multi_logit_bias: added %zu patterns\n", n_added);
     s.ngram_bias_pending.clear();
 }
 
