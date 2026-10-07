@@ -371,12 +371,13 @@ static void test(void) {
             assert(p.sampling.ngram_bias_pending.size() == 3);
             std::filesystem::remove(fname);
         }
-        // 5. whole-file errors return false
+        // 5. whole-file errors return false; a lone object is valid single-line JSONL
         {
             common_params p;
             const auto f1 = write_tmp("mlb_obj.json", "{\"sequence\":[1,2],\"bias\":-1.0}");
             argv = {"binary_name", "-m", "dummy.gguf", "--multi-logit-bias-file", f1};
-            assert(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), p, LLAMA_EXAMPLE_COMMON));
+            assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), p, LLAMA_EXAMPLE_COMMON));
+            assert(p.sampling.ngram_bias_pending.size() == 1);
             std::filesystem::remove(f1);
             const auto f2 = write_tmp("mlb_broken.json", "[broken");
             argv = {"binary_name", "-m", "dummy.gguf", "--multi-logit-bias-file", f2};
@@ -416,6 +417,45 @@ static void test(void) {
             argv = {"binary_name", "-m", "dummy.gguf", "--multi-logit-bias", "5:-3.0"};
             assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), p, LLAMA_EXAMPLE_COMMON));
             assert(p.sampling.ngram_bias.size() == 1);
+        }
+        // 9. JSONL: one entry per line, blank lines ignored
+        {
+            common_params p;
+            const auto fname = write_tmp("mlb_lines.jsonl",
+                "{\"sequence\":[123,456],\"bias\":-2.0}\n"
+                "\n"
+                "   \n"
+                "{\"sequence\":\" wash\",\"bias\":false}\n");
+            argv = {"binary_name", "-m", "dummy.gguf", "--multi-logit-bias-file", fname};
+            assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), p, LLAMA_EXAMPLE_COMMON));
+            assert(p.sampling.ngram_bias_pending.size() == 2);
+            assert(p.sampling.ngram_bias_pending[0].at("bias").get<float>() == -2.0f);
+            assert(p.sampling.ngram_bias_pending[1].at("bias").is_boolean());
+            std::filesystem::remove(fname);
+        }
+        // 10. JSONL: malformed lines and bad entries skipped with warning, rest staged
+        {
+            common_params p;
+            const auto fname = write_tmp("mlb_lines_bad.jsonl",
+                "{broken\n"
+                "{\"sequence\":[1,2]}\n"
+                "42\n"
+                "{\"sequence\":[1,-1],\"bias\":-1.0}\n"
+                "{\"sequence\":[1,2],\"bias\":\"-inf\"}\n");
+            argv = {"binary_name", "-m", "dummy.gguf", "--multi-logit-bias-file", fname};
+            assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), p, LLAMA_EXAMPLE_COMMON));
+            assert(p.sampling.ngram_bias_pending.size() == 2);
+            assert(p.sampling.ngram_bias_pending[0].at("bias").get<float>() == -1.0f);
+            assert(p.sampling.ngram_bias_pending[1].at("bias").get<std::string>() == "-inf");
+            std::filesystem::remove(fname);
+        }
+        // 11. JSONL with no parseable line is a whole-file error
+        {
+            common_params p;
+            const auto f1 = write_tmp("mlb_lines_empty.jsonl", "\n  \n");
+            argv = {"binary_name", "-m", "dummy.gguf", "--multi-logit-bias-file", f1};
+            assert(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), p, LLAMA_EXAMPLE_COMMON));
+            std::filesystem::remove(f1);
         }
         // shared helper equivalence
         {

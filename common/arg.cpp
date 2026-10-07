@@ -2306,29 +2306,55 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     ).set_sampling());
     add_opt(common_arg(
         {"--multi-logit-bias-file"}, "FNAME",
-        "file with JSON array of {\"sequence\",\"bias\"} entries, e.g. [{\"sequence\": [123, 456], \"bias\": -2.0}, {\"sequence\": \"Hello\", \"bias\": false}].\n"
+        "file with JSON array of {\"sequence\",\"bias\"} entries or JSONL (one entry per line), e.g. [{\"sequence\": [123, 456], \"bias\": -2.0}, {\"sequence\": \"Hello\", \"bias\": false}].\n"
         "sequence is a string (tokenized exact), an int array (verbatim IDs, -1/null = prefix wildcard), or a mixed array of strings and int/null; bias is a number (|bias| <= 100) or false/-inf/-INFINITY for a ban.\n"
         "Patterns need 2-8 tokens post-tokenize with at least one concrete prefix ID; max 1024 entries (first 1024 win), max 256 wildcard patterns; invalid entries are skipped with a warning.",
         [](common_params & params, const std::string & value) {
             const std::string content = read_file(value);
-            const json arr = json::parse(content);
-            if (!arr.is_array()) {
-                throw std::invalid_argument("expected JSON array in multi_logit_bias file");
-            }
-            size_t idx = 0;
-            for (const auto & el : arr) {
+            auto stage = [&](const json & el, size_t idx) {
                 if (!el.is_object()) {
                     LOG_WRN("multi_logit_bias file '%s' index %zu: skipped not an object\n", value.c_str(), idx);
-                    idx++;
-                    continue;
+                    return;
                 }
                 if (!el.contains("sequence") || !el.contains("bias")) {
                     LOG_WRN("multi_logit_bias file '%s' index %zu: skipped missing sequence/bias\n", value.c_str(), idx);
-                    idx++;
-                    continue;
+                    return;
                 }
                 params.sampling.ngram_bias_pending.push_back(el);
-                idx++;
+            };
+            bool is_array = false;
+            try {
+                const json arr = json::parse(content);
+                if (arr.is_array()) {
+                    is_array = true;
+                    size_t idx = 0;
+                    for (const auto & el : arr) {
+                        stage(el, idx++);
+                    }
+                }
+            } catch (const common_json_error &) {
+                // not a JSON array, try JSONL below
+            }
+            if (!is_array) {
+                size_t idx = 0;
+                size_t n_parsed = 0;
+                std::stringstream ss(content);
+                std::string line;
+                while (std::getline(ss, line)) {
+                    if (line.find_first_not_of(" \t\r\n") == std::string::npos) {
+                        continue;
+                    }
+                    const json el = json::parse_no_throw(line);
+                    if (el.is_discarded()) {
+                        LOG_WRN("multi_logit_bias file '%s' line %zu: skipped invalid JSON\n", value.c_str(), idx + 1);
+                        continue;
+                    }
+                    n_parsed++;
+                    stage(el, idx++);
+                }
+                if (n_parsed == 0) {
+                    throw std::invalid_argument("expected JSON array or JSONL in multi_logit_bias file");
+                }
             }
         }
     ).set_sampling());
