@@ -457,6 +457,22 @@ static void test(void) {
             assert(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), p, LLAMA_EXAMPLE_COMMON));
             std::filesystem::remove(f1);
         }
+        // 12. file with zero usable entries is a whole-file error (never silent no-bans)
+        {
+            common_params p;
+            const auto f1 = write_tmp("mlb_empty.json", "[]");
+            argv = {"binary_name", "-m", "dummy.gguf", "--multi-logit-bias-file", f1};
+            assert(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), p, LLAMA_EXAMPLE_COMMON));
+            std::filesystem::remove(f1);
+            const auto f2 = write_tmp("mlb_allskip.json", "[42,{\"bias\":-1.0}]");
+            argv = {"binary_name", "-m", "dummy.gguf", "--multi-logit-bias-file", f2};
+            assert(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), p, LLAMA_EXAMPLE_COMMON));
+            std::filesystem::remove(f2);
+            const auto f3 = write_tmp("mlb_allskip.jsonl", "42\n{\"bias\":-1.0}\n");
+            argv = {"binary_name", "-m", "dummy.gguf", "--multi-logit-bias-file", f3};
+            assert(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), p, LLAMA_EXAMPLE_COMMON));
+            std::filesystem::remove(f3);
+        }
         // shared helper equivalence
         {
             float b = 0.0f;

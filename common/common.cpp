@@ -1200,6 +1200,7 @@ static void common_resolve_ngram_bias_pending(const llama_vocab * vocab, common_
     }
     const int n_vocab = llama_vocab_n_tokens(vocab);
     size_t n_skipped = 0;
+    size_t n_added = 0;
     size_t n_wild_patterns = 0;
     for (const auto & p : s.ngram_bias) {
         for (size_t k = 0; k + 1 < p.tokens.size(); ++k) {
@@ -1211,10 +1212,14 @@ static void common_resolve_ngram_bias_pending(const llama_vocab * vocab, common_
     }
 
     size_t idx = 0;
+    auto skip = [&](const char * why) {
+        COM_ERR("multi_logit_bias: entry %zu: skipped (%s)\n", idx, why);
+        n_skipped++;
+        idx++;
+    };
     for (const auto & el : s.ngram_bias_pending) {
         if (s.ngram_bias.size() >= 1024) {
-            n_skipped++;
-            idx++;
+            skip("pattern cap (1024) reached");
             continue;
         }
         float bias = 0.0f;
@@ -1234,18 +1239,15 @@ static void common_resolve_ngram_bias_pending(const llama_vocab * vocab, common_
             have_bias = false;
         }
         if (!have_bias) {
-            n_skipped++;
-            idx++;
+            skip("invalid bias");
             continue;
         }
         if (!std::isfinite(bias) && bias != -INFINITY) {
-            n_skipped++;
-            idx++;
+            skip("non-finite bias");
             continue;
         }
         if (std::isfinite(bias) && fabsf(bias) > 100.0f) {
-            n_skipped++;
-            idx++;
+            skip("bias magnitude exceeds 100");
             continue;
         }
         llama_tokens toks;
@@ -1264,8 +1266,7 @@ static void common_resolve_ngram_bias_pending(const llama_vocab * vocab, common_
                 }
                 if (!is_mixed) {
                     if (seq.size() > 8) {
-                        n_skipped++;
-                        idx++;
+                        skip("more than 8 ids");
                         continue;
                     }
                     toks.reserve(seq.size());
@@ -1290,8 +1291,7 @@ static void common_resolve_ngram_bias_pending(const llama_vocab * vocab, common_
                         toks.push_back((llama_token) (int64_t) dv);
                     }
                     if (bad) {
-                        n_skipped++;
-                        idx++;
+                        skip("invalid token id");
                         continue;
                     }
                 } else {
@@ -1321,41 +1321,41 @@ static void common_resolve_ngram_bias_pending(const llama_vocab * vocab, common_
                         toks.push_back((llama_token) (int64_t) dv);
                     }
                     if (bad) {
-                        n_skipped++;
-                        idx++;
+                        skip("invalid token id");
                         continue;
                     }
                 }
             } else {
-                n_skipped++;
-                idx++;
+                skip("sequence is not a string or array");
                 continue;
             }
         } catch (const common_json_error &) {
-            n_skipped++;
-            idx++;
+            skip("invalid entry");
             continue;
         }
         int n_wild = 0;
         int n_concrete = 0;
         if (!common_ngram_bias_check_ids(toks, n_wild, n_concrete)) {
-            n_skipped++;
-            idx++;
+            skip("ids fail length, suffix, wildcard or concrete-prefix checks");
             continue;
         }
         if (n_wild > 0) {
             if (n_wild_patterns >= 256) {
-                n_skipped++;
-                idx++;
+                skip("wildcard pattern cap (256) reached");
                 continue;
             }
             n_wild_patterns++;
         }
         s.ngram_bias.push_back({std::move(toks), bias});
+        n_added++;
         idx++;
     }
     if (n_skipped) {
-        COM_WRN("multi_logit_bias: skipped %zu invalid entries\n", n_skipped);
+        COM_ERR("multi_logit_bias: skipped %zu invalid entries\n", n_skipped);
+    }
+    if (!s.ngram_bias_pending.empty() && n_added == 0) {
+        // a file was given but nothing survived: fail loudly instead of serving unbanned
+        throw std::runtime_error(string_format("multi_logit_bias: file produced 0 valid patterns (skipped %zu invalid entries)", n_skipped));
     }
     s.ngram_bias_pending.clear();
 }

@@ -567,7 +567,7 @@ std::vector<std::unique_ptr<field>> make_llama_cmpl_schema(const common_params &
                 ctx.params.sampling.ngram_bias.push_back({std::move(toks), bias});
             }
             if (n_skipped) {
-                SRV_WRN("multi_logit_bias: skipped %zu invalid entries\n", n_skipped);
+                SRV_ERR("multi_logit_bias: skipped %zu invalid entries\n", n_skipped);
             }
         }));
 

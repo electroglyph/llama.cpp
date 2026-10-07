@@ -4334,7 +4334,7 @@ struct llama_sampler * llama_sampler_init_ngram_bias(
     }
     const int n_skip = n_null + n_len + n_id + n_suffix_wild + n_wild_count + n_all_wild + n_bias + n_mag;
     if (truncated || n_skip > 0) {
-        LLAMA_LOG_WARN(
+        LLAMA_LOG_ERROR(
             "%s: skipped %d invalid ngram-bias patterns (null=%d len=%d id=%d suffix_wild=%d wild_count=%d all_wild=%d bias=%d mag=%d truncated=%d)\n",
             __func__, n_skip + (truncated ? (n_patterns - n_check) : 0),
             n_null, n_len, n_id, n_suffix_wild, n_wild_count, n_all_wild, n_bias, n_mag, truncated ? 1 : 0);

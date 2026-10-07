@@ -2311,13 +2311,14 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         "Patterns need 2-8 tokens post-tokenize with at least one concrete prefix ID; max 1024 entries (first 1024 win), max 256 wildcard patterns; invalid entries are skipped with a warning.",
         [](common_params & params, const std::string & value) {
             const std::string content = read_file(value);
+            const size_t n_before = params.sampling.ngram_bias_pending.size();
             auto stage = [&](const json & el, size_t idx) {
                 if (!el.is_object()) {
-                    LOG_WRN("multi_logit_bias file '%s' index %zu: skipped not an object\n", value.c_str(), idx);
+                    LOG_ERR("multi_logit_bias file '%s' index %zu: skipped not an object\n", value.c_str(), idx);
                     return;
                 }
                 if (!el.contains("sequence") || !el.contains("bias")) {
-                    LOG_WRN("multi_logit_bias file '%s' index %zu: skipped missing sequence/bias\n", value.c_str(), idx);
+                    LOG_ERR("multi_logit_bias file '%s' index %zu: skipped missing sequence/bias\n", value.c_str(), idx);
                     return;
                 }
                 params.sampling.ngram_bias_pending.push_back(el);
@@ -2346,7 +2347,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                     }
                     const json el = json::parse_no_throw(line);
                     if (el.is_discarded()) {
-                        LOG_WRN("multi_logit_bias file '%s' line %zu: skipped invalid JSON\n", value.c_str(), idx + 1);
+                        LOG_ERR("multi_logit_bias file '%s' line %zu: skipped invalid JSON\n", value.c_str(), idx + 1);
                         continue;
                     }
                     n_parsed++;
@@ -2355,6 +2356,9 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                 if (n_parsed == 0) {
                     throw std::invalid_argument("expected JSON array or JSONL in multi_logit_bias file");
                 }
+            }
+            if (params.sampling.ngram_bias_pending.size() == n_before) {
+                throw std::invalid_argument("multi_logit_bias file contains no usable entries");
             }
         }
     ).set_sampling());
