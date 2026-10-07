@@ -1201,15 +1201,6 @@ static void common_resolve_ngram_bias_pending(const llama_vocab * vocab, common_
     const int n_vocab = llama_vocab_n_tokens(vocab);
     size_t n_skipped = 0;
     size_t n_added = 0;
-    size_t n_wild_patterns = 0;
-    for (const auto & p : s.ngram_bias) {
-        for (size_t k = 0; k + 1 < p.tokens.size(); ++k) {
-            if (p.tokens[k] == -1) {
-                n_wild_patterns++;
-                break;
-            }
-        }
-    }
 
     size_t idx = 0;
     auto skip = [&](const char * why) {
@@ -1218,10 +1209,6 @@ static void common_resolve_ngram_bias_pending(const llama_vocab * vocab, common_
         idx++;
     };
     for (const auto & el : s.ngram_bias_pending) {
-        if (idx >= 1024) {
-            skip("entry cap (1024) reached");
-            continue;
-        }
         float bias = 0.0f;
         bool have_bias = false;
         try {
@@ -1344,18 +1331,11 @@ static void common_resolve_ngram_bias_pending(const llama_vocab * vocab, common_
         auto commit = [&](llama_tokens form, const char * variant) {
             int n_wild = 0;
             int n_concrete = 0;
+            (void) n_wild;
             if (!common_ngram_bias_check_ids(form, n_wild, n_concrete)) {
                 COM_ERR("multi_logit_bias: entry %zu%s: skipped (ids fail length, suffix, wildcard or concrete-prefix checks)\n", idx, variant);
                 n_skipped++;
                 return;
-            }
-            if (n_wild > 0) {
-                if (n_wild_patterns >= 256) {
-                    COM_ERR("multi_logit_bias: entry %zu%s: skipped (wildcard pattern cap (256) reached)\n", idx, variant);
-                    n_skipped++;
-                    return;
-                }
-                n_wild_patterns++;
             }
             s.ngram_bias.push_back({std::move(form), bias});
             n_added++;

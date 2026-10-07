@@ -906,10 +906,10 @@ def test_multi_logit_bias_caps():
     server.start()
     prompt = "I believe the meaning of life is"
     ids = _mlb_distinct_ids(40)
-    # 1025 pairwise-distinct bigrams: extras beyond 1024 are skipped
-    entries = [{"sequence": [ids[i // len(ids)], ids[i % len(ids)]], "bias": -1.0} for i in range(1025)]
+    # no entry cap: all 1500 pairwise-distinct bigrams are accepted
+    entries = [{"sequence": [ids[i // len(ids)], ids[i % len(ids)]], "bias": -1.0} for i in range(1500)]
     res = _mlb_complete(prompt, n_predict=2, extra={"multi_logit_bias": entries})
-    assert len(res.body["generation_settings"]["multi_logit_bias"]) == 1024
+    assert len(res.body["generation_settings"]["multi_logit_bias"]) == 1500
     # L == 9 rejected while L == 8 accepted
     res = _mlb_complete(prompt, n_predict=2, extra={"multi_logit_bias": [
         {"sequence": ids[:9], "bias": -1.0},
@@ -917,7 +917,7 @@ def test_multi_logit_bias_caps():
     ]})
     echo = res.body["generation_settings"]["multi_logit_bias"]
     assert echo == [{"sequence": ids[:8], "bias": -1.0}]
-    # 260 wildcard patterns: only the first 256 survive, exact ones unaffected
+    # no wildcard cap: all 260 wildcard patterns survive, exact ones unaffected
     wild = [{"sequence": [ids[i // len(ids)], -1, ids[i % len(ids)]], "bias": -1.0} for i in range(260)]
     exact = [
         {"sequence": [ids[0], ids[1]], "bias": -1.0},
@@ -925,8 +925,8 @@ def test_multi_logit_bias_caps():
     ]
     res = _mlb_complete(prompt, n_predict=2, extra={"multi_logit_bias": wild + exact})
     echo = res.body["generation_settings"]["multi_logit_bias"]
-    assert len(echo) == 258
-    assert sum(1 for e in echo if -1 in e["sequence"]) == 256
+    assert len(echo) == 262
+    assert sum(1 for e in echo if -1 in e["sequence"]) == 260
     assert echo[-2:] == exact
 
 

@@ -592,17 +592,17 @@ static void test_ngram_bias() {
         }
         llama_sampler_free(smpl);
     }
-    // C-layer truncation: only the first 2048 patterns are used
+    // no C-layer truncation: every pattern applies
     {
-        std::vector<std::vector<llama_token>> store(2049, std::vector<llama_token>{7, 8});
-        store[2048] = {1, 2};
+        std::vector<std::vector<llama_token>> store(8193, std::vector<llama_token>{7, 8});
+        store[8192] = {1, 2};
         std::vector<llama_ngram_bias> pats;
-        pats.reserve(2049);
-        for (int i = 0; i < 2049; ++i) pats.push_back({store[i].data(), 2, -1.0f});
+        pats.reserve(8193);
+        for (int i = 0; i < 8193; ++i) pats.push_back({store[i].data(), 2, -1.0f});
         auto out = ngram_run(V, pats, {1});
-        GGML_ASSERT(out[2] == 0.0f);
+        GGML_ASSERT(out[2] == -1.0f);
         auto out2 = ngram_run(V, pats, {7});
-        GGML_ASSERT(out2[8] == -2048.0f);
+        GGML_ASSERT(out2[8] == -8192.0f);
     }
     // determinism: identical apply twice gives identical logits
     {

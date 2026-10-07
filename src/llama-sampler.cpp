@@ -4069,7 +4069,6 @@ struct llama_sampler * llama_sampler_init_logit_bias(
 
 // ngram-bias
 
-static constexpr int32_t NGRAM_BIAS_MAX_PATTERNS  = 2048;
 static constexpr size_t  NGRAM_BIAS_MAX_LEN       = 8;
 static constexpr float   NGRAM_BIAS_MAX_ABS       = 100.0f;
 static constexpr int32_t NGRAM_BIAS_MAX_WILDCARDS = 2;
@@ -4265,15 +4264,9 @@ struct llama_sampler * llama_sampler_init_ngram_bias(
     if (n_vocab <= 0 || n_patterns <= 0 || patterns == nullptr) {
         return llama_sampler_init_empty("?ngram-bias");
     }
-    int32_t n_check = n_patterns;
-    bool truncated = false;
-    if (n_check > NGRAM_BIAS_MAX_PATTERNS) {
-        n_check = NGRAM_BIAS_MAX_PATTERNS;
-        truncated = true;
-    }
     // validated patterns before merge
     std::vector<std::pair<std::vector<llama_token>, float>> valid;
-    valid.reserve((size_t) n_check);
+    valid.reserve((size_t) n_patterns);
     int n_null = 0;
     int n_len = 0;
     int n_id = 0;
@@ -4282,7 +4275,7 @@ struct llama_sampler * llama_sampler_init_ngram_bias(
     int n_all_wild = 0;
     int n_bias = 0;
     int n_mag = 0;
-    for (int32_t i = 0; i < n_check; ++i) {
+    for (int32_t i = 0; i < n_patterns; ++i) {
         const llama_ngram_bias & p = patterns[i];
         if (p.tokens == nullptr) {
             if (p.n_tokens > 0) {
@@ -4346,11 +4339,11 @@ struct llama_sampler * llama_sampler_init_ngram_bias(
         valid.emplace_back(std::move(toks), b);
     }
     const int n_skip = n_null + n_len + n_id + n_suffix_wild + n_wild_count + n_all_wild + n_bias + n_mag;
-    if (truncated || n_skip > 0) {
+    if (n_skip > 0) {
         LLAMA_LOG_ERROR(
-            "%s: skipped %d invalid ngram-bias patterns (null=%d len=%d id=%d suffix_wild=%d wild_count=%d all_wild=%d bias=%d mag=%d truncated=%d)\n",
-            __func__, n_skip + (truncated ? (n_patterns - n_check) : 0),
-            n_null, n_len, n_id, n_suffix_wild, n_wild_count, n_all_wild, n_bias, n_mag, truncated ? 1 : 0);
+            "%s: skipped %d invalid ngram-bias patterns (null=%d len=%d id=%d suffix_wild=%d wild_count=%d all_wild=%d bias=%d mag=%d)\n",
+            __func__, n_skip,
+            n_null, n_len, n_id, n_suffix_wild, n_wild_count, n_all_wild, n_bias, n_mag);
     }
     if (valid.empty()) {
         return llama_sampler_init_empty("?ngram-bias");

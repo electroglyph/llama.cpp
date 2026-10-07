@@ -2269,11 +2269,9 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     ).set_sampling());
     add_opt(common_arg(
         {"--multi-logit-bias"}, "IDS:BIAS",
-        "n-gram logit bias: comma-separated token IDs, colon, bias.\n"
-        "e.g. `--multi-logit-bias \"123,456:-2.0\"` biases token 456 by -2.0 when preceded by 123.\n"
-        "Use -1 for a prefix wildcard (max 2 per pattern, never as the last ID), e.g. `\"123,-1,456:-1.0\"`; the prefix needs at least one concrete ID.\n"
-        "Use -inf (or -INFINITY) as BIAS for a ban. Patterns need 1-8 IDs, |BIAS| <= 100, max 2048 patterns (first 2048 win); file and server inputs additionally cap wildcard patterns at 256. Out-of-range entries are skipped at init.\n"
-        "Duplicate patterns merge by summing biases (-INFINITY wins; the sum may exceed 100). Malformed values (missing colon, non-numeric IDs) error. Repeatable; string input is server-only, resolve IDs via /tokenize.\n"
+        "n-gram logit bias: IDS:BIAS adds BIAS to the last ID after its prefix, e.g. `--multi-logit-bias \"123,456:-2.0\"`.\n"
+        "-1 is a prefix wildcard (max 2, never last; prefix needs a concrete ID). -inf bans. 1-8 IDs, |BIAS| <= 100.\n"
+        "Duplicates merge (-INFINITY wins). Bad values error. Repeatable.\n"
         "See --multi-logit-bias-file for file input.",
         [](common_params & params, const std::string & value) {
             const size_t sep = value.rfind(':');
@@ -2306,9 +2304,8 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     ).set_sampling());
     add_opt(common_arg(
         {"--multi-logit-bias-file"}, "FNAME",
-        "file with JSON array of {\"sequence\",\"bias\"} entries or JSONL (one entry per line), e.g. [{\"sequence\": [123, 456], \"bias\": -2.0}, {\"sequence\": \"Hello\", \"bias\": false}].\n"
-        "sequence is a string (tokenized exact, plus its leading-space form so the ban also fires mid-sentence; strings already starting with whitespace are used as-is), an int array (verbatim IDs, -1/null = prefix wildcard), or a mixed array of strings and int/null; bias is a number (|bias| <= 100) or false/-inf/-INFINITY for a ban.\n"
-        "Patterns need 1-8 tokens post-tokenize with at least one concrete prefix ID (a single token acts like logit_bias); max 1024 entries (first 1024 win), each string entry registering up to two patterns; max 256 wildcard patterns; invalid entries are skipped with a warning.",
+        "JSON array or JSONL file of {\"sequence\",\"bias\"} entries, e.g. [{\"sequence\": [123, 456], \"bias\": -2.0}, {\"sequence\": \"Hello\", \"bias\": false}].\n"
+        "String = exact tokenize plus leading-space form; ID array = verbatim IDs (-1/null = prefix wildcard); mixed arrays allowed. 1-8 tokens, -inf bans. Bad entries warn + skip.",
         [](common_params & params, const std::string & value) {
             const std::string content = read_file(value);
             const size_t n_before = params.sampling.ngram_bias_pending.size();

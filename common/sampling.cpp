@@ -352,8 +352,8 @@ struct common_sampler * common_sampler_init(
             params.backend_sampling = false;
         }
         std::vector<llama_ngram_bias> c;
-        c.reserve(std::min<size_t>(params.ngram_bias.size(), 2048));
-        for (size_t i = 0; i < params.ngram_bias.size() && i < 2048; ++i) {
+        c.reserve(params.ngram_bias.size());
+        for (size_t i = 0; i < params.ngram_bias.size(); ++i) {
             const auto & p = params.ngram_bias[i];
             c.push_back({p.tokens.data(), p.tokens.size(), p.bias});
         }
