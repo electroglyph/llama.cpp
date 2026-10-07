@@ -729,8 +729,16 @@ def test_multi_logit_bias_string():
     assert len(ids) >= 2
     res = _mlb_complete(prompt, extra={"multi_logit_bias": [{"sequence": text, "bias": -100.0}]})
     echo = res.body["generation_settings"]["multi_logit_bias"]
-    # string form is normalized to token IDs in the echo
-    assert echo == [{"sequence": ids, "bias": -100.0}]
+    # string form is normalized to token IDs in the echo, plus the
+    # leading-space form when it tokenizes differently
+    if not text[:1].isspace():
+        spaced = _mlb_tokenize(" " + text)
+        if spaced != ids:
+            assert echo == [{"sequence": ids, "bias": -100.0}, {"sequence": spaced, "bias": -100.0}]
+        else:
+            assert echo == [{"sequence": ids, "bias": -100.0}]
+    else:
+        assert echo == [{"sequence": ids, "bias": -100.0}]
     if ids == [lp, t0]:
         # exact round-trip: the observed bigram is banned, greedy pick changes
         assert res.body["tokens"][0] != t0
@@ -758,6 +766,32 @@ def test_multi_logit_bias_leading_space():
                 assert res.body["tokens"][0] != t0
             return
     assert echo == [{"sequence": ids, "bias": -100.0}]
+
+
+def test_multi_logit_bias_bans_strings_in_output():
+    # end-to-end proof: a banned string stays out of the generated tokens
+    global server
+    server.start()
+    prompt = "I believe the meaning of life is"
+    base, prompt_tokens = _mlb_baseline(prompt, 32)
+    t0 = base.body["tokens"][0]
+    lp = prompt_tokens[-1]
+    text = _mlb_detokenize([lp, t0])
+    ids = _mlb_tokenize(text)
+    assert len(ids) >= 2
+    res = _mlb_complete(prompt, 32, extra={"multi_logit_bias": [{"sequence": text, "bias": False}]})
+    pats = [tuple(e["sequence"]) for e in res.body["generation_settings"]["multi_logit_bias"]]
+    assert len(pats) >= 1
+    got = res.body["tokens"]
+    assert len(got) >= 3
+    # invariant: a working ban can never let a registered pattern through,
+    # so no window of the output may equal any registered pattern
+    for pat in pats:
+        for i in range(len(got) - len(pat) + 1):
+            assert tuple(got[i:i + len(pat)]) != pat
+    if ids == [lp, t0]:
+        # exact round-trip: the ban fires on the first step, output diverges
+        assert got[0] != t0
 
 
 def test_multi_logit_bias_wildcard():
